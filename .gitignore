@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Frontend
+node_modules/
+web/node_modules/
+web/dist/
+.npm
+.eslintcache
+
+# Sensitive Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# Database & Runtime Uploads
+data/soulhealth.db
+data/soulhealth.db-journal
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Logs & System
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
