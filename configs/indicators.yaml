@@ -825,3 +825,121 @@ indicators:
     cv_intra: 0.087
     reference:
       - { sex: ANY, age: [18, 120], lower: 16.0, upper: 38.0 }
+
+  # ------------------------- 甲状腺功能 -------------------------
+  TSH:
+    name_cn: 促甲状腺激素
+    aliases: [TSH, 促甲状腺素, 促甲状腺激素, "TSH(促甲状腺素)"]
+    canonical_unit: uIU/mL
+    unit_conversions: { "mIU/L": 1.0, "uIU/ml": 1.0, "mU/L": 1.0, "uIU/mL": 1.0 }
+    plausible_range: [0.001, 200]
+    grade_multiplier: { mild: 1.0, moderate: 2.5, severe: 5.0 }
+    cv_intra: 0.197
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0.27, upper: 4.20 }
+
+  FT3:
+    name_cn: 游离三碘甲状腺原氨酸
+    aliases: [FT3, 游离T3, 游离三碘甲腺原氨酸, FT-3]
+    canonical_unit: pmol/L
+    unit_conversions: { "pmol/L": 1.0, "pg/mL": 1.536, "pg/ml": 1.536 }
+    plausible_range: [0.1, 100]
+    cv_intra: 0.086
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 3.10, upper: 6.80 }
+
+  FT4:
+    name_cn: 游离甲状腺素
+    aliases: [FT4, 游离T4, 游离甲状腺素, FT-4]
+    canonical_unit: pmol/L
+    unit_conversions: { "pmol/L": 1.0, "ng/dL": 12.87, "ng/dl": 12.87 }
+    plausible_range: [0.5, 200]
+    cv_intra: 0.063
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 12.00, upper: 22.00 }
+
+  TPOAb:
+    name_cn: 甲状腺过氧化物酶抗体
+    aliases: [TPOAb, TPO-Ab, 抗TPO, 甲状腺过氧化物酶抗体, TPO抗体]
+    canonical_unit: IU/mL
+    unit_conversions: { "IU/mL": 1.0, "IU/ml": 1.0, "U/mL": 1.0 }
+    plausible_range: [0, 2000]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 34.0 }
+
+  TGAb:
+    name_cn: 甲状腺球蛋白抗体
+    aliases: [TGAb, TG-Ab, 抗TG, 甲状腺球蛋白抗体, TG抗体]
+    canonical_unit: IU/mL
+    unit_conversions: { "IU/mL": 1.0, "IU/ml": 1.0, "U/mL": 1.0 }
+    plausible_range: [0, 4000]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 115.0 }
+
+  # ------------------------- 常用肿瘤标志物 -------------------------
+  CEA:
+    name_cn: 癌胚抗原
+    aliases: [CEA, 癌胚抗原, 癌胚抗原CEA]
+    canonical_unit: ng/mL
+    unit_conversions: { "ng/mL": 1.0, "ng/ml": 1.0, "ug/L": 1.0 }
+    plausible_range: [0, 5000]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 5.0 }
+
+  AFP:
+    name_cn: 甲胎蛋白
+    aliases: [AFP, 甲胎蛋白, 甲种胎儿球蛋白]
+    canonical_unit: ng/mL
+    unit_conversions: { "ng/mL": 1.0, "ng/ml": 1.0, "ug/L": 1.0, "IU/mL": 1.21 }
+    plausible_range: [0, 10000]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 7.0 }
+
+  CA199:
+    name_cn: 糖类抗原19-9
+    aliases: [CA199, CA19-9, "CA-199", 糖类抗原19-9, 糖链抗原19-9]
+    canonical_unit: U/mL
+    unit_conversions: { "U/mL": 1.0, "U/ml": 1.0, "kU/L": 1.0 }
+    plausible_range: [0, 10000]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 27.0 }
+
+  CA125:
+    name_cn: 糖类抗原125
+    aliases: [CA125, CA-125, 糖类抗原125, 糖链抗原125]
+    canonical_unit: U/mL
+    unit_conversions: { "U/mL": 1.0, "U/ml": 1.0, "kU/L": 1.0 }
+    plausible_range: [0, 5000]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 35.0 }
+
+  PSA:
+    name_cn: 前列腺特异性抗原
+    aliases: [PSA, T-PSA, 总PSA, 前列腺特异抗原, 前列腺特异性抗原]
+    canonical_unit: ng/mL
+    unit_conversions: { "ng/mL": 1.0, "ng/ml": 1.0, "ug/L": 1.0 }
+    plausible_range: [0, 1000]
+    reference:
+      - { sex: M, age: [18, 120], lower: 0, upper: 4.0 }
+
+  # ------------------------- 铁代谢与关键维生素 -------------------------
+  FERR:
+    name_cn: 血清铁蛋白
+    aliases: [FERR, FER, 铁蛋白, 血清铁蛋白]
+    canonical_unit: ng/mL
+    unit_conversions: { "ng/mL": 1.0, "ng/ml": 1.0, "ug/L": 1.0 }
+    plausible_range: [0.5, 5000]
+    cv_intra: 0.147
+    reference:
+      - { sex: M, age: [18, 120], lower: 30.0, upper: 400.0 }
+      - { sex: F, age: [18, 120], lower: 15.0, upper: 150.0 }
+
+  VD3:
+    name_cn: 25-羟基维生素D
+    aliases: [VD3, 25-OH-VD, 25-OH-D, 25羟基维生素D, 维生素D3, "25-(OH)D"]
+    canonical_unit: ng/mL
+    unit_conversions: { "ng/mL": 1.0, "ng/ml": 1.0, "nmol/L": 0.4006 }
+    plausible_range: [1.0, 300.0]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 30.0, upper: 100.0 }
+

@@ -10,7 +10,7 @@ from app.engine import assessment
 from app.engine.prediction import compute_risk_prediction, compute_risk_timeline
 
 def run_full_drp_test():
-    user = repo.create_user("13800000001", "pass123")
+    user = repo.get_user_by_name("13800000001") or repo.create_user("13800000001", "pass123")
     profile = repo.create_profile(user["id"], "王建国", "male", "1972-04-12", height_cm=175, weight_kg=82)
     pid = profile["id"]
     print(f"1. 创建测试用户: {profile['name']} (id={pid}, age={profile['age_years']})")

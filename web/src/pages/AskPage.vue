@@ -96,7 +96,64 @@ const convId = ref('')
 const convs = ref([])
 const convPick = ref('')
 
-const starters = ['最近有点乏力，正常吗', '我的转氨酶怎么样了', '晚上应该怎么吃', '适合喝什么茶']
+const starters = ref(['帮我解读一下最近的体检报告', '根据我的情况，晚上应该怎么吃？', '推荐适合我体质的药膳与茶饮', '我的慢病未来进展概率高吗？'])
+
+async function loadDynamicStarters() {
+  try {
+    const res = await api.assessmentLatest(session.profileId)
+    const ass = res.assessment
+    if (ass && ass.issues?.length) {
+      const top = ass.issues[0]
+      const t = (top.title || '') + (top.summary || '')
+      const tags = top.goal_tags || []
+      if (tags.includes('joint_care') || t.includes('膝') || t.includes('关节') || t.includes('半月板')) {
+        starters.value = [
+          '我的膝盖半月板磨损平时能做什么运动？',
+          '推荐几款适合我骨关节的广东靓汤？',
+          '膝关节积液需要注意什么？',
+          '五指毛桃桑寄生杜仲煲鸡汤怎么煲？',
+        ]
+      } else if (tags.includes('uric_care') || t.includes('尿酸') || t.includes('痛风')) {
+        starters.value = [
+          '我的尿酸偏高平时能喝老火汤吗？',
+          '土茯苓五指毛桃汤真的能排湿降尿酸吗？',
+          '痛风发作前有什么先兆？',
+          '豆制品和海鲜怎么吃更安全？',
+        ]
+      } else if (tags.includes('liver_care') || t.includes('转氨酶') || t.includes('肝') || t.includes('脂肪肝')) {
+        starters.value = [
+          '我的轻度脂肪肝应该怎么通过饮食调理？',
+          'ALT/AST 转氨酶升高日常要注意什么？',
+          '帮我看看转氨酶需要多久复查？',
+          '推荐几款护肝降酶的药膳茶饮？',
+        ]
+      } else if (tags.includes('lipid_care') || t.includes('甘油三酯') || t.includes('胆固醇') || t.includes('血脂')) {
+        starters.value = [
+          '我的甘油三酯偏高应该怎么控制饮食？',
+          '血脂高平时吃什么能改善？',
+          '未来发生心血管事件的风险大吗？',
+          '推荐几款降脂消滞的广式煲汤？',
+        ]
+      } else if (tags.includes('glucose_care') || t.includes('血糖') || t.includes('糖化')) {
+        starters.value = [
+          '餐后血糖偏高平时主食怎么吃？',
+          '桑叶玉竹茶对辅助控糖有帮助吗？',
+          '我的糖化血红蛋白属于糖尿病前期吗？',
+          '适合控糖的低升糖食谱推荐？',
+        ]
+      } else if (t.includes('胃') || t.includes('幽门') || t.includes('反酸')) {
+        starters.value = [
+          '经常胃胀反酸怎么养胃？',
+          '猴头菇砂仁汤适合慢性胃炎吗？',
+          '日常三餐有哪些养胃禁忌？',
+          '适合脾胃虚寒的温中药膳推荐？',
+        ]
+      }
+    }
+  } catch {
+    /* 忽略异常，使用默认推荐 */
+  }
+}
 
 function scrollBottom() {
   nextTick(() => {
@@ -157,7 +214,10 @@ async function switchConv() {
   } catch (e) { alert(e.message) }
 }
 
-onMounted(refreshConvs)
+onMounted(() => {
+  refreshConvs()
+  loadDynamicStarters()
+})
 </script>
 
 <style scoped>
