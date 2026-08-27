@@ -61,7 +61,21 @@
             <SourceTag :text="e.source" />
           </span>
         </div>
-        <span class="more">查看依据与行动建议 ›</span>
+        <div class="more-cta">
+          <span class="more-icon">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+          </span>
+          <div class="more-content">
+            <span class="more-title">查看完整依据与行动建议</span>
+            <span class="more-sub">深度医学解释 · 本次VS上次对比 · 趋势预测 · 定制方案</span>
+          </div>
+          <span class="more-arrow">›</span>
+        </div>
       </section>
 
       <!-- 分析完成 → 直达方案（反馈修复：分析后主动提示生成专属食疗与药食同源配方） -->
@@ -199,9 +213,65 @@ onMounted(async () => {
 .evi { display: inline-flex; align-items: center; gap: 6px;
   background: var(--surface-sunk); border: 1px solid var(--line-soft);
   border-radius: var(--r-sm); padding: 4px 9px; font-size: 12px; }
-.evi em { font-style: normal; color: var(--ink-400); font-size: 11px; }
-.more { display: block; margin-top: var(--sp-3); font-size: 12.5px;
-  color: var(--brand-700); font-weight: 600; }
+.more-cta {
+  margin-top: var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(45, 95, 75, 0.08) 0%, rgba(184, 145, 47, 0.12) 100%);
+  border: 1.5px solid rgba(45, 95, 75, 0.22);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  transition: all 0.2s ease;
+  color: var(--brand-900);
+}
+.card-clickable:hover .more-cta {
+  background: linear-gradient(135deg, rgba(45, 95, 75, 0.15) 0%, rgba(184, 145, 47, 0.22) 100%);
+  border-color: var(--brand-600);
+  box-shadow: 0 3px 12px rgba(45, 95, 75, 0.12);
+  transform: translateY(-1px);
+}
+.more-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--brand-700);
+  color: #fff;
+  border-radius: 9px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(45, 95, 75, 0.25);
+}
+.more-content {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  gap: 2px;
+  text-align: left;
+}
+.more-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--brand-800);
+  letter-spacing: 0.2px;
+}
+.more-sub {
+  font-size: 11px;
+  color: var(--ink-500);
+  line-height: 1.3;
+}
+.more-arrow {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--brand-700);
+  line-height: 1;
+  transition: transform 0.2s ease;
+}
+.card-clickable:hover .more-arrow {
+  transform: translateX(3px);
+  color: var(--gold-600);
+}
 
 .fold { width: 100%; border: none; background: none; padding: 0;
   cursor: pointer; font: inherit; text-align: left; }
