@@ -5,6 +5,11 @@
       <button :class="{ on: tab === 'tea' }" @click="tab = 'tea'">药食同源茶饮</button>
     </div>
 
+    <p v-if="teaHint && tab === 'diet'" class="alert alert-info fade-in" style="cursor:pointer"
+       @click="tab = 'tea'; teaHint = false">
+      食补食谱已生成 ✓ 茶饮方案还差几项安全信息，点这里切到「药食同源茶饮」查看并补充 ›
+    </p>
+
     <!-- ===================== 食补（P09） ===================== -->
     <template v-if="tab === 'diet'">
       <EmptyState v-if="loaded && !diet" icon="❋" text="还没有食补方案">
@@ -187,6 +192,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { useSessionStore } from '../store/session'
 import EmptyState from '../components/EmptyState.vue'
@@ -222,6 +228,8 @@ const HistoryFold = defineComponent({
   },
 })
 
+const route = useRoute()
+const router = useRouter()
 const session = useSessionStore()
 const tab = ref('diet')
 const loaded = ref(false)
@@ -230,6 +238,7 @@ const diet = ref(null)
 const tea = ref(null)
 const dietHist = ref([])
 const teaHist = ref([])
+const teaHint = ref(false)
 
 const p = computed(() => tea.value?.plan || {})
 const poolKeys = [
@@ -245,21 +254,14 @@ const GOAL_CN = { liver_care: '肝脏管理', lipid_care: '血脂管理',
 const goalLabel = (t) => GOAL_CN[t] || t
 
 async function refresh() {
-  if (!session.profileId) {
-    await session.ensureProfile()
-  }
   const pid = session.profileId
-  if (!pid) {
-    loaded.value = true
-    return
-  }
   const [d, t, dh, th] = await Promise.allSettled([
     api.dietActive(pid), api.teaActive(pid),
     api.dietHistory(pid), api.teaHistory(pid)])
-  if (d.status === 'fulfilled' && d.value) diet.value = d.value.plan
-  if (t.status === 'fulfilled' && t.value) tea.value = t.value.plan
-  if (dh.status === 'fulfilled' && dh.value) dietHist.value = dh.value.items
-  if (th.status === 'fulfilled' && th.value) teaHist.value = th.value.items
+  if (d.status === 'fulfilled') diet.value = d.value.plan
+  if (t.status === 'fulfilled') tea.value = t.value.plan
+  if (dh.status === 'fulfilled') dietHist.value = dh.value.items
+  if (th.status === 'fulfilled') teaHist.value = th.value.items
   loaded.value = true
 }
 
@@ -282,7 +284,25 @@ async function openTea(id) {
   catch (e) { alert(e.message) }
 }
 
-onMounted(refresh)
+onMounted(async () => {
+  await refresh()
+  // 从分析页「一键生成」进入：gen=diet / tea / all（AC 反馈修复）
+  const g = route.query.gen
+  if (!g) return
+  router.replace({ path: '/plan' })   // 清掉参数，避免刷新时重复生成
+  if (g === 'tea') {
+    tab.value = 'tea'
+    await genTea()
+    return
+  }
+  tab.value = 'diet'
+  await genDiet()
+  if (g === 'all') {
+    await genTea()
+    // 停在食补页时，若茶饮被安全检查要求补充信息，给出可点击的提示
+    teaHint.value = !!tea.value && tea.value.safety_status !== 'allow'
+  }
+})
 </script>
 
 <style scoped>

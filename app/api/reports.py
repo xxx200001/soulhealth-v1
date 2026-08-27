@@ -27,6 +27,10 @@ def upload(profile_id: str = Form(...),
     scoped_profile(profile_id, user)
     if not files:
         raise HTTPException(422, "请至少选择一份文件")
+    if len(files) > config.MAX_UPLOAD_BATCH:
+        raise HTTPException(
+            422, f"一次最多上传 {config.MAX_UPLOAD_BATCH} 份"
+                 f"（本次收到 {len(files)} 份），请分批上传")
     rids: list[str] = []
     for f in files:
         safe = f"{uuid.uuid4().hex[:8]}_{Path(f.filename or 'file').name}"

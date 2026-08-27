@@ -5,7 +5,7 @@
       <div class="head fade-in">
         <div class="mark">和</div>
         <h1>今天想做什么？</h1>
-        <p class="muted">选择一个开始，健康档案会在下一步一起建立</p>
+        <p class="muted">选择一个开始，健康档案会在接下来两步一起建立</p>
       </div>
       <div class="stack stagger">
         <button v-for="e in entries" :key="e.key" class="card entry card-clickable"
@@ -20,11 +20,11 @@
       </div>
     </template>
 
-    <!-- P02 最小建档：仅三要素 -->
-    <template v-else>
+    <!-- P02 建档第 1/2 步：三要素 -->
+    <template v-else-if="step === 2">
       <div class="head fade-in">
         <h1>先认识一下</h1>
-        <p class="muted">只需要三项，其余信息在需要时再补充</p>
+        <p class="muted">第 1/2 步：其余关键信息在下一步一起填好</p>
       </div>
       <div class="card stack fade-in">
         <div class="field">
@@ -43,10 +43,58 @@
           <input v-model="birth" type="month" class="input" />
         </div>
         <p v-if="error" class="alert alert-danger">{{ error }}</p>
-        <button class="btn btn-primary btn-block btn-lg" :disabled="busy" @click="create">
-          <span v-if="busy" class="spin"></span>建立我的健康档案
+        <button class="btn btn-primary btn-block btn-lg" @click="toStep3">
+          下一步：健康基础档案 ›
         </button>
         <button class="btn btn-quiet btn-block btn-sm" @click="step = 1">‹ 返回上一步</button>
+      </div>
+    </template>
+
+    <!-- P02+ 建档第 2/2 步：健康基础档案（身高体重 / 过敏 / 用药…）
+         这些正是食补与药食同源方案安全检查所需的字段：
+         在建档时一次填好，后续生成方案不再被「补充信息」打断 -->
+    <template v-else>
+      <div class="head fade-in">
+        <h1>健康基础档案</h1>
+        <p class="muted">第 2/2 步：这几项决定食补与药食同源方案能否直接生成，
+          现在填好，之后不再被打断</p>
+      </div>
+      <div class="card stack fade-in">
+        <div class="grid-2">
+          <div class="field">
+            <label class="label">身高 cm</label>
+            <input v-model.number="height" type="number" class="input" />
+          </div>
+          <div class="field">
+            <label class="label">体重 kg</label>
+            <input v-model.number="weight" type="number" step="0.1" class="input" />
+          </div>
+        </div>
+        <div v-if="sex === 'female'" class="field">
+          <label class="label">当前是否怀孕</label>
+          <div class="opt-grid">
+            <button class="opt" :class="{ on: pregnant === false }"
+                    @click="pregnant = false">否</button>
+            <button class="opt" :class="{ on: pregnant === true }"
+                    @click="pregnant = true">是</button>
+          </div>
+        </div>
+        <TagField v-model="allergies" label="过敏史（药物 / 食物）"
+                  placeholder="如：青霉素、花生（回车添加）"
+                  empty-hint="确认无过敏可留空，完成建档后记为「无」" />
+        <TagField v-model="medications" label="当前用药"
+                  placeholder="如：厄贝沙坦（回车添加）"
+                  empty-hint="确认未用药可留空，完成建档后记为「无」" />
+        <TagField v-model="conditions" label="既往疾病（选填）"
+                  placeholder="如：高血压（回车添加）" />
+        <p v-if="error" class="alert alert-danger">{{ error }}</p>
+        <button class="btn btn-primary btn-block btn-lg" :disabled="busy" @click="create(true)">
+          <span v-if="busy" class="spin"></span>完成建档，开始使用
+        </button>
+        <button class="btn btn-quiet btn-block btn-sm" :disabled="busy" @click="create(false)">
+          先跳过，稍后在「我的 - 基础资料」补充
+        </button>
+        <button class="btn btn-quiet btn-block btn-sm" @click="step = 2">‹ 返回上一步</button>
       </div>
     </template>
   </div>
@@ -57,6 +105,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { useSessionStore } from '../store/session'
+import TagField from '../components/TagField.vue'
 
 const router = useRouter()
 const session = useSessionStore()
@@ -65,6 +114,12 @@ const intent = ref('archive')
 const name = ref('')
 const sex = ref('')
 const birth = ref('')
+const height = ref(null)
+const weight = ref(null)
+const pregnant = ref(null)
+const allergies = ref([])
+const medications = ref([])
+const conditions = ref([])
 const error = ref('')
 const busy = ref(false)
 
@@ -80,8 +135,14 @@ const entries = [
 
 function choose(k) { intent.value = k; step.value = 2 }
 
-async function create() {
+function toStep3() {
   if (!name.value) { error.value = '请填写姓名或昵称'; return }
+  error.value = ''
+  step.value = 3
+}
+
+async function create(withDetails) {
+  if (!name.value) { error.value = '请填写姓名或昵称'; step.value = 2; return }
   busy.value = true
   error.value = ''
   try {
@@ -89,6 +150,19 @@ async function create() {
       name: name.value, sex: sex.value || null,
       birth_date: birth.value ? `${birth.value}-01` : null,
     })
+    if (withDetails) {
+      // 空数组也提交：写入 field_times，等价于明确保存「无」——
+      // 与「未记录」不同，茶饮安全检查不会再因缺失打断流程
+      const payload = { allergies: allergies.value,
+                        medications: medications.value,
+                        conditions: conditions.value }
+      if (height.value) payload.height_cm = Number(height.value)
+      if (weight.value) payload.weight_kg = Number(weight.value)
+      if (sex.value === 'female' && pregnant.value !== null) {
+        payload.pregnant = pregnant.value
+      }
+      await api.updateProfile(p.id, payload)
+    }
     await session.select(p.id)
     router.replace({ upload: '/upload', ask: '/ask', archive: '/archive' }[intent.value])
   } catch (e) {

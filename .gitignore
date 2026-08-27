@@ -44,6 +44,8 @@ data/uploads/*
 # Logs & System
 *.log
 tunnel_url.txt
+soulhealth-v1.1-fixes/
+soulhealth-v1.1-fixes.zip
 .DS_Store
 Thumbs.db
 .vscode/

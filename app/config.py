@@ -73,6 +73,10 @@ LLM_MODE: str = "mock" if MOCK_MODE else ("real" if (ANTHROPIC_API_KEY or OPENAI
 
 OCR_ENGINE: str = os.getenv("SOULHEALTH_OCR_ENGINE", "vision_llm").strip() or "vision_llm"
 
+# 单次上传份数上限：批次过大（如一次 15 张照片）容易请求超时/整批失败，
+# 前后端共同按此限流，前端会把多选自动拆成多批（F-UP 反馈修复）
+MAX_UPLOAD_BATCH: int = int(os.getenv("SOULHEALTH_MAX_UPLOAD_BATCH", "5"))
+
 # LLM 上下文与成本控制（规格书 §8）
 AGENT_CONTEXT_MAX_OBS: int = int(os.getenv("SOULHEALTH_AGENT_MAX_OBS", "24"))
 AGENT_CONTEXT_MAX_EVENTS: int = int(os.getenv("SOULHEALTH_AGENT_MAX_EVENTS", "10"))

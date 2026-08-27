@@ -107,49 +107,11 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { useSessionStore } from '../store/session'
-
-// 标签输入子组件：数组字段（过敏/用药/疾病…）
-const TagField = defineComponent({
-  props: { modelValue: Array, label: String, placeholder: String,
-           updated: String, emptyHint: String },
-  emits: ['update:modelValue'],
-  setup(props, { emit }) {
-    const draft = ref('')
-    const add = () => {
-      const v = draft.value.trim()
-      if (!v) return
-      emit('update:modelValue', [...(props.modelValue || []), v])
-      draft.value = ''
-    }
-    const rm = (i) => {
-      const arr = [...(props.modelValue || [])]
-      arr.splice(i, 1)
-      emit('update:modelValue', arr)
-    }
-    return () => h('div', { class: 'field' }, [
-      h('label', { class: 'label' }, [props.label,
-        props.updated && h('em', { class: 'upd' }, props.updated)]),
-      h('div', { class: 'row wrap', style: 'gap:6px' }, [
-        ...(props.modelValue || []).map((t, i) =>
-          h('span', { class: 'tag', key: t + i }, [t,
-            h('button', { class: 'tag-x', onClick: () => rm(i) }, '×')])),
-        h('input', {
-          class: 'input', style: 'flex:1; min-width: 150px',
-          placeholder: props.placeholder, value: draft.value,
-          onInput: (e) => (draft.value = e.target.value),
-          onKeyup: (e) => e.key === 'Enter' && add(),
-          onBlur: add,
-        }),
-      ]),
-      (!props.modelValue || !props.modelValue.length) && props.emptyHint
-        ? h('span', { class: 'tiny' }, props.emptyHint) : null,
-    ])
-  },
-})
+import TagField from '../components/TagField.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -212,12 +174,6 @@ async function save() {
 
 <style scoped>
 .safetyc { border-color: #CCDCEE; }
-:deep(.upd) { font-style: normal; font-weight: 400; font-size: 11px;
+.upd { font-style: normal; font-weight: 400; font-size: 11px;
   color: var(--ok); margin-left: 6px; }
-:deep(.tag) { display: inline-flex; align-items: center; gap: 4px;
-  background: var(--brand-050); color: var(--brand-800);
-  border: 1px solid var(--brand-100); border-radius: var(--r-full);
-  padding: 5px 6px 5px 12px; font-size: 13px; }
-:deep(.tag-x) { border: none; background: none; color: var(--brand-500);
-  font-size: 15px; cursor: pointer; line-height: 1; padding: 0 4px; }
 </style>

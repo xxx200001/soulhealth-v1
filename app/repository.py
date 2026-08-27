@@ -15,19 +15,21 @@ from typing import Any, List, Optional
 
 from . import db
 
-_local = threading.local()
+_conn = None
 _lock = threading.Lock()
 
 
-def _c():
-    if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = db.connect()
-    return _local.conn
-
-
 def init() -> None:
-    conn = _c()
-    db.init_db(conn)
+    global _conn
+    if _conn is None:
+        _conn = db.connect()
+        db.init_db(_conn)
+
+
+def _c():
+    if _conn is None:
+        init()
+    return _conn
 
 
 def now() -> str:

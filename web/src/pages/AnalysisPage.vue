@@ -64,6 +64,25 @@
         <span class="more">查看依据与行动建议 ›</span>
       </section>
 
+      <!-- 分析完成 → 直达方案（反馈修复：分析后主动提示生成专属食疗与药食同源配方） -->
+      <section v-if="assessment" class="card fade-in cta">
+        <div class="card-title"><span class="dot" style="background: var(--gold-500)"></span>
+          下一步：把分析结果落到一日三餐</div>
+        <p class="muted" style="margin: 6px 0 var(--sp-3)">
+          根据本次分析出的健康目标，为你生成专属食补食谱与药食同源茶饮；
+          茶饮生成前会按你的档案（过敏、用药、孕期等）做安全检查
+        </p>
+        <button class="btn btn-gold btn-block" @click="$router.push('/plan?gen=all')">
+          一键生成 专属食补食谱 + 药食同源茶饮 ›
+        </button>
+        <div class="row" style="margin-top: var(--sp-2)">
+          <button class="btn btn-ghost btn-sm grow" @click="$router.push('/plan?gen=diet')">
+            只生成食补</button>
+          <button class="btn btn-ghost btn-sm grow" @click="$router.push('/plan?gen=tea')">
+            只生成茶饮</button>
+        </div>
+      </section>
+
       <!-- 相对稳定项折叠（信息不过载） -->
       <section v-if="stables.length" class="card fade-in">
         <button class="row-between fold" @click="stableOpen = !stableOpen">
@@ -160,6 +179,8 @@ onMounted(async () => {
   padding: 8px 12px; font-size: 13px; color: var(--ink-700); cursor: pointer;
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .scope-line .tiny { margin-left: auto; }
+
+.cta { border-color: var(--gold-500); }
 
 .top { border-left: 4px solid; }
 .b-priority { border-left-color: var(--lv-priority); }

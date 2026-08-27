@@ -12,12 +12,15 @@
                :disabled="busy" @change="onPick" />
         <span v-if="!busy" class="drop-ico" v-html="icoUp"></span>
         <span v-else class="spin"></span>
-        <b>{{ busy ? `正在识别 第 ${doing}/${total} 份…` : '点击选择文件（可多选）' }}</b>
-        <span class="tiny">原件将完整保存，识别结果可随时回溯到原始报告</span>
+        <b>{{ busy ? `正在上传识别 第 ${doing}/${total} 份…` : '点击选择文件（可多选）' }}</b>
+        <span class="tiny">多份资料会自动排队逐份上传识别，一份失败不影响其他；
+          原件完整保存，识别结果可随时回溯</span>
       </label>
       <div v-if="busy" class="bar" style="margin-top: var(--sp-3)">
         <span :style="{ width: (doing / Math.max(total,1)) * 100 + '%' }"></span>
       </div>
+      <p v-if="notice" class="alert fade-in" :class="'alert-' + notice.type"
+         style="margin-top: var(--sp-3)">{{ notice.text }}</p>
     </section>
 
     <!-- 本次处理总账（F-UP-07） -->
@@ -128,6 +131,7 @@ const total = ref(0)
 const summary = ref(null)
 const items = ref([])
 const scope = ref(null)
+const notice = ref(null)   // { type: 'ok' | 'warn' | 'danger', text }
 
 const icoUp = '<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v4a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19v-4"/></svg>'
 
@@ -144,29 +148,86 @@ function statusBadge(s) {
            failed: 'badge-danger' }[s] || 'badge-quiet'
 }
 
+// 单次选择的份数上限（防止极端批次）；上传本身逐份排队，单份失败不影响其他
+const MAX_PICK = 20
+
 async function onPick(e) {
-  const files = [...e.target.files]
+  let files = [...e.target.files]
   e.target.value = ''
   if (!files.length) return
+  notice.value = null
+  if (files.length > MAX_PICK) {
+    files = files.slice(0, MAX_PICK)
+    notice.value = { type: 'warn',
+      text: `一次最多选择 ${MAX_PICK} 份，已保留前 ${MAX_PICK} 份开始识别，其余请稍后再传` }
+  }
   busy.value = true
   total.value = files.length
-  doing.value = files.length   // 后端同步处理整批，进度以整批呈现
-  try {
-    const res = await api.uploadReports(session.profileId, files)
-    summary.value = res
-    await hydrate(res.reports)
-    await loadScope()
-  } catch (err) {
-    alert(err.message)
-  } finally {
-    busy.value = false
-    doing.value = 0
+  doing.value = 0
+  summary.value = null
+  items.value = []
+  const merged = { total: 0, ready: 0, needs_confirmation: 0, failed: 0,
+                   observations: 0, comparable_codes: 0, date_span: null }
+  for (const f of files) {
+    doing.value += 1
+    try {
+      const res = await api.uploadReports(session.profileId, [f])
+      mergeSummary(merged, res)
+      await hydrate(res.reports)
+    } catch (err) {
+      // 请求本身失败（网络/超时）：文件未到达服务端，保留在列表中可重传
+      merged.total += 1
+      merged.failed += 1
+      items.value.push({
+        id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+        status: 'failed', source_filename: f.name,
+        error: `上传请求失败：${err.message}`,
+        _local: true, _file: f, _lowObs: [], _saving: false,
+      })
+    }
+  }
+  summary.value = merged
+  notice.value = buildNotice(merged)
+  busy.value = false
+  doing.value = 0
+  await loadScope()
+}
+
+function mergeSummary(m, res) {
+  m.total += res.total
+  m.ready += res.ready
+  m.needs_confirmation += res.needs_confirmation
+  m.failed += res.failed
+  m.observations += res.observations
+  m.comparable_codes = res.comparable_codes   // 档案级口径，取最新值
+  if (res.date_span) {
+    m.date_span = m.date_span
+      ? [m.date_span[0] < res.date_span[0] ? m.date_span[0] : res.date_span[0],
+         m.date_span[1] > res.date_span[1] ? m.date_span[1] : res.date_span[1]]
+      : [...res.date_span]
   }
 }
 
+function buildNotice(m) {
+  const okCount = m.ready + m.needs_confirmation
+  if (!m.failed && !m.needs_confirmation) {
+    return { type: 'ok', text: `本次 ${m.total} 份已全部上传成功并识别入档 ✓` }
+  }
+  if (!m.failed) {
+    return { type: 'ok',
+      text: `本次 ${m.total} 份已全部上传成功 ✓ 其中 ${m.needs_confirmation} 份` +
+            '需要你在下方确认日期或数值后入档' }
+  }
+  if (okCount) {
+    return { type: 'warn',
+      text: `已成功上传 ${okCount} 份、失败 ${m.failed} 份；失败的条目可在下方单独重试` }
+  }
+  return { type: 'danger',
+    text: `本次 ${m.total} 份上传失败，请检查网络后重试` }
+}
+
 async function hydrate(list) {
-  // 为待确认报告拉取低置信观测项，就地编辑
-  const out = []
+  // 为待确认报告拉取低置信观测项，就地编辑；逐份追加到列表
   for (const r of list) {
     const row = { ...r, _date: r.report_date || '', _lowObs: [], _saving: false }
     if (r.status === 'needs_confirmation') {
@@ -177,9 +238,8 @@ async function hydrate(list) {
           .map((o) => ({ ...o, _val: o.value_num }))
       } catch { /* 保底仍可确认日期 */ }
     }
-    out.push(row)
+    items.value.push(row)
   }
-  items.value = out
 }
 
 async function confirm(r) {
@@ -204,6 +264,37 @@ async function confirm(r) {
 }
 
 async function retry(r) {
+  // 网络层失败的文件：服务端没有记录，直接重新上传这一份
+  if (r._local && r._file) {
+    r.error = ''
+    r.status = 'processing'
+    try {
+      const res = await api.uploadReports(session.profileId, [r._file])
+      const nr = res.reports[0]
+      Object.assign(r, nr, { _local: false, _file: null })
+      if (nr.status === 'needs_confirmation') {
+        try {
+          const full = await api.getReport(nr.id)
+          r._date = nr.report_date || ''
+          r._lowObs = (full.observations || [])
+            .filter((o) => o.needs_confirm && !o.confirmed)
+            .map((o) => ({ ...o, _val: o.value_num }))
+        } catch { /* 保底仍可确认日期 */ }
+      }
+      if (summary.value) {
+        summary.value.failed -= 1
+        if (nr.status === 'ready') summary.value.ready += 1
+        else if (nr.status === 'needs_confirmation') summary.value.needs_confirmation += 1
+        else summary.value.failed += 1
+        notice.value = buildNotice(summary.value)
+      }
+    } catch (e) {
+      r.status = 'failed'
+      r.error = `上传请求失败：${e.message}`
+    }
+    await loadScope()
+    return
+  }
   try {
     const res = await api.retryReport(r.id)
     Object.assign(r, res)
