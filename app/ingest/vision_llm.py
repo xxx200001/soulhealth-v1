@@ -319,7 +319,11 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
     err = openai_err or anthropic_err or "视觉抽取解析失败"
     if isinstance(err, VisionNotSeeingImageError):
         raise err
-    raise ExtractionError(f"视觉抽取失败：{err} {_diag_text(diag)}")
+    raise ExtractionError(
+        f"AI 视觉服务暂时不可用（上游中转平台返回: {err}）。"
+        "建议：请检查 .env 中的 API 密钥通道是否正常，或将 .env 中的 SOULHEALTH_MOCK=1 切换为离线演示模式。"
+        f" {_diag_text(diag)}"
+    )
 
 
 # ---------------------------------------------------------------- 视觉自检
