@@ -238,6 +238,7 @@ onMounted(async () => {
   align-items: flex-start;
   gap: 18px;
   min-width: max-content;
+  position: relative;
 }
 .t-step-item {
   display: flex;
@@ -245,7 +246,21 @@ onMounted(async () => {
   align-items: center;
   gap: 3px;
   position: relative;
-  min-width: 75px;
+  min-width: 80px;
+}
+.t-step-item:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 100%;
+  height: 2px;
+  background: rgba(184, 145, 47, 0.25);
+  z-index: 1;
+}
+.t-step-item.projection:not(:last-child)::after {
+  border-top: 2px dashed var(--gold-400);
+  background: transparent;
 }
 .t-dot {
   width: 16px;
@@ -255,6 +270,8 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   box-shadow: 0 2px 5px rgba(0,0,0,0.15);
+  position: relative;
+  z-index: 2;
 }
 .t-dot.proj {
   background: #fff;
