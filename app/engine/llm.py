@@ -22,20 +22,32 @@ def complete(system: str, user: str, max_tokens: int = 900) -> Optional[str]:
 
     # 1. 优先尝试 Anthropic Claude 协议（主通道：如刀盾）
     if config.ANTHROPIC_API_KEY:
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
-                                         base_url=config.ANTHROPIC_BASE_URL,
-                                         timeout=15.0)
-            resp = client.messages.create(
-                model=config.LLM_MODEL, max_tokens=max_tokens, system=system,
-                messages=[{"role": "user", "content": user}])
-            text = "".join(b.text for b in resp.content
-                           if getattr(b, "type", "") == "text").strip()
-            if text:
-                return text
-        except Exception as exc:
-            print(f"[LLM] 主通道 (Anthropic/刀盾) 调用失败: {exc}，正在尝试自动切换至备用通道 (OpenAI/FluAPI)...")
+        import anthropic
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
+                                     base_url=config.ANTHROPIC_BASE_URL,
+                                     timeout=15.0)
+        candidate_models = [config.LLM_MODEL]
+        for m in ("claude-sonnet-4-6", "claude-sonnet-5"):
+            if m not in candidate_models:
+                candidate_models.append(m)
+
+        for model_name in candidate_models:
+            try:
+                resp = client.messages.create(
+                    model=model_name, max_tokens=max_tokens, system=system,
+                    messages=[{"role": "user", "content": user}])
+                text = "".join(b.text for b in resp.content
+                               if getattr(b, "type", "") == "text").strip()
+                if text:
+                    return text
+            except Exception as exc:
+                err_str = str(exc)
+                if "429" in err_str or "400" in err_str or "token负载" in err_str or "暂时不可用" in err_str:
+                    import time
+                    time.sleep(1.0)
+                    continue
+                print(f"[LLM] 主通道 (Anthropic/刀盾 - {model_name}) 调用失败: {exc}")
+        print("[LLM] 主通道所有候选模型均不可用，正在尝试自动切换至备用通道 (OpenAI/FluAPI)...")
 
     # 2. 备选尝试 OpenAI 兼容协议（备用通道：如 FluAPI）
     if config.OPENAI_API_KEY:

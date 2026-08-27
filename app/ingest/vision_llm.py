@@ -108,6 +108,33 @@ def sniff_media_type(data: bytes, file_path: Path) -> Optional[str]:
             ".pdf": "application/pdf"}.get(file_path.suffix.lower())
 
 
+def _optimize_image(raw_bytes: bytes, max_dim: int = 1600, quality: int = 85) -> Tuple[bytes, str]:
+    """智能预处理：压缩分辨率与字节，降低 80%+ Vision Token 消耗，防止中转平台 429 Token 负载报错。"""
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw_bytes))
+        if im.mode in ("RGBA", "LA", "P"):
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            if im.mode == "P":
+                im = im.convert("RGBA")
+            bg.paste(im, mask=im.split()[-1] if im.mode in ("RGBA", "LA") else None)
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+
+        w, h = im.size
+        if max(w, h) > max_dim:
+            scale = max_dim / float(max(w, h))
+            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue(), "image/jpeg"
+    except Exception:
+        return raw_bytes, "image/jpeg"
+
+
 def _build_source_block(file_path: Path) -> Tuple[dict, dict]:
     """前置校验并构造内容块。返回 (block, diagnostics)。"""
     data = file_path.read_bytes()
@@ -129,6 +156,10 @@ def _build_source_block(file_path: Path) -> Tuple[dict, dict]:
             f"{file_path.name} 体积 {len(data) / 1e6:.1f}MB 超出上限 "
             f"{limit / 1e6:.1f}MB。请压缩后重试（手机拍照建议导出为"
             "「中等质量」JPG，一般 1MB 以内即可清晰识别）。")
+
+    # 对非 PDF 图片进行智能轻量化，大幅节省视觉 Token
+    if not is_pdf:
+        data, media_type = _optimize_image(data)
 
     b64 = base64.b64encode(data).decode("ascii")
     diag = {"filename": file_path.name, "bytes": len(data),
@@ -157,35 +188,50 @@ def _extract_via_anthropic(source_block: dict, diag: dict,
         return None, None
     import anthropic
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
-                                 base_url=config.ANTHROPIC_BASE_URL)
+                                 base_url=config.ANTHROPIC_BASE_URL,
+                                 timeout=30.0)
     messages = [{
         "role": "user",
         "content": [source_block,
                     {"type": "text", "text": extraction_user_prompt(doc_type_hint)}],
     }]
+
+    # 刀盾主备模型轮询表（遇到 429/400 时自动轮询）
+    primary_model = config.LLM_MODEL
+    candidate_models = [primary_model]
+    for m in ("claude-sonnet-4-6", "claude-sonnet-5"):
+        if m not in candidate_models:
+            candidate_models.append(m)
+
     last_error: Optional[Exception] = None
-    for _attempt in range(2):
-        try:
-            resp = client.messages.create(
-                model=config.LLM_MODEL,
-                max_tokens=3000,
-                system=EXTRACTION_SYSTEM,
-                messages=messages,
-            )
-            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-            data = json.loads(_strip_to_json(text))
-            data["engine"] = "vision_llm"
-            return data, None
-        except Exception as exc:
-            text = locals().get("text", "")
-            if _looks_like_no_image(text):
-                return None, VisionNotSeeingImageError(
-                    f"请求已送达模型，但模型答复未收到图像。{_diag_text(diag)} "
-                    f"模型原话：{(text or '').strip()[:160]}"
+    for model_name in candidate_models:
+        for attempt in range(2):
+            try:
+                resp = client.messages.create(
+                    model=model_name,
+                    max_tokens=3000,
+                    system=EXTRACTION_SYSTEM,
+                    messages=messages,
                 )
-            last_error = exc
-            messages.append({"role": "assistant", "content": text or "(空)"})
-            messages.append({"role": "user", "content": repair_prompt(str(exc))})
+                text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+                data = json.loads(_strip_to_json(text))
+                data["engine"] = "vision_llm"
+                return data, None
+            except Exception as exc:
+                err_str = str(exc)
+                text = locals().get("text", "")
+                if _looks_like_no_image(text):
+                    return None, VisionNotSeeingImageError(
+                        f"请求已送达模型，但模型答复未收到图像。{_diag_text(diag)} "
+                        f"模型原话：{(text or '').strip()[:160]}"
+                    )
+                last_error = exc
+                # 若遇到 429 负载限流或 400 服务不可用，适度退避
+                if "429" in err_str or "400" in err_str or "token负载" in err_str or "暂时不可用" in err_str:
+                    time.sleep(1.5)
+                    break  # 尝试切换下一个候选模型
+                messages.append({"role": "assistant", "content": text or "(空)"})
+                messages.append({"role": "user", "content": repair_prompt(err_str)})
     return None, last_error
 
 
