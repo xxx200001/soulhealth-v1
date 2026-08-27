@@ -2,10 +2,8 @@
   <div class="app">
     <AppHeader v-if="!bare" :title="title" :back="back" />
     <main :class="bare ? '' : 'app-main'">
-      <router-view v-slot="{ Component }">
-        <transition name="page" mode="out-in">
-          <component :is="Component" />
-        </transition>
+      <router-view v-slot="{ Component, route }">
+        <component :is="Component" :key="route.fullPath" />
       </router-view>
     </main>
     <BottomNav v-if="!bare" :active="nav" />

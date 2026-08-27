@@ -81,9 +81,12 @@ body {
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
 }
-h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 700; margin: 0; letter-spacing: .2px; }
-a { color: var(--brand-700); text-decoration: none; }
 button { font-family: inherit; }
+button, .btn, .chip, a, [role="button"], .card-clickable, .tab, .nav-item {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
