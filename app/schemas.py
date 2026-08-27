@@ -151,32 +151,62 @@ def from_dict(data: dict) -> ExtractionResult:
         )
 
     observations: List[Observation] = []
-    for i, o_raw in enumerate(data.get("observations") or []):
+    raw_obs_list = data.get("observations") or data.get("items") or data.get("indicators") or []
+    for i, o_raw in enumerate(raw_obs_list):
         if not isinstance(o_raw, dict):
             errors.append(f"observations[{i}] 应为对象")
             continue
-        code = str(o_raw.get("code", "")).strip().upper()
-        if not code:
-            errors.append(f"observations[{i}] 缺少 code（标准化指标缩写，如 ALT/GGT）")
+        display_name = str(o_raw.get("display") or o_raw.get("name") or o_raw.get("item_name") or "").strip()
+        code = str(o_raw.get("code") or display_name or "").strip().upper()
+        if not code and not display_name:
+            errors.append(f"observations[{i}] 缺少 code 或名称")
             continue
-        flag = o_raw.get("abnormal_flag")
+        flag = o_raw.get("abnormal_flag") or o_raw.get("flag") or o_raw.get("hint")
         if flag is not None:
             flag = str(flag).strip().upper() or None
-            if flag is not None and flag not in ABNORMAL_FLAGS:
-                errors.append(f"observations[{i}].abnormal_flag 应为 H/L/N")
+            if flag in ("↑", "HIGH", "UP", "+", "阳性", "POS"):
+                flag = "H"
+            elif flag in ("↓", "LOW", "DOWN", "-", "阴性", "NEG"):
+                flag = "L"
+            elif flag in ("N", "NORMAL", "正常"):
+                flag = "N"
+            elif flag not in ABNORMAL_FLAGS:
                 flag = None
+        
+        # 兼容 value / value_num / result
+        val_raw = o_raw.get("value_num") if o_raw.get("value_num") is not None else (o_raw.get("value") if o_raw.get("value") is not None else o_raw.get("result"))
+        val_text_raw = o_raw.get("value_text")
+
+        # 尝试转数字
+        val_num = _opt_float(val_raw, f"observations[{i}].value_num", [])
+        if val_num is None and val_raw is not None and not val_text_raw:
+            val_text_raw = str(val_raw).strip()
+
+        # 参考范围兼容
+        ref_low = _opt_float(o_raw.get("ref_low"), f"observations[{i}].ref_low", [])
+        ref_high = _opt_float(o_raw.get("ref_high"), f"observations[{i}].ref_high", [])
+        if ref_low is None and ref_high is None:
+            rr = str(o_raw.get("ref_range") or o_raw.get("reference") or "").strip()
+            if rr and "-" in rr:
+                parts = rr.split("-")
+                if len(parts) == 2:
+                    try:
+                        ref_low = float(parts[0].strip())
+                        ref_high = float(parts[1].strip())
+                    except ValueError:
+                        pass
+
         obs = Observation(
-            code=code,
-            display=(str(o_raw["display"]).strip() if o_raw.get("display") else None),
-            value_num=_opt_float(o_raw.get("value_num"), f"observations[{i}].value_num", errors),
-            value_text=(str(o_raw["value_text"]).strip() if o_raw.get("value_text") else None),
-            unit=(str(o_raw["unit"]).strip() if o_raw.get("unit") else None),
-            ref_low=_opt_float(o_raw.get("ref_low"), f"observations[{i}].ref_low", errors),
-            ref_high=_opt_float(o_raw.get("ref_high"), f"observations[{i}].ref_high", errors),
+            code=code or display_name,
+            display=display_name or code,
+            value_num=val_num,
+            value_text=val_text_raw,
+            unit=(str(o_raw.get("unit", "")).strip() or None),
+            ref_low=ref_low,
+            ref_high=ref_high,
             abnormal_flag=flag,
         )
         if obs.value_num is None and not obs.value_text:
-            errors.append(f"observations[{i}] 需要 value_num 或 value_text 至少其一")
             continue
         observations.append(obs)
 
