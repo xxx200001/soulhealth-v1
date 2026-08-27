@@ -197,10 +197,10 @@ def _extract_via_anthropic(source_block: dict, diag: dict,
                     {"type": "text", "text": extraction_user_prompt(doc_type_hint)}],
     }]
 
-    # 刀盾主备模型轮询表（遇到 429/400 时自动轮询）
-    primary_model = config.LLM_MODEL
+    # 主备视觉模型轮询表
+    primary_model = config.VISION_MODEL
     candidate_models = [primary_model]
-    for m in ("claude-sonnet-4-6", "claude-sonnet-5"):
+    for m in ("claude-opus-4-6", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-5"):
         if m not in candidate_models:
             candidate_models.append(m)
 
@@ -348,7 +348,7 @@ def vision_selftest() -> dict:
 
     返回 {ok, mode, model, reply, reason}；不抛异常，供接口与命令行直接展示。
     """
-    base = {"model": config.LLM_MODEL, "mode": config.LLM_MODE}
+    base = {"model": config.VISION_MODEL, "mode": config.LLM_MODE}
     if config.MOCK_MODE:
         return {**base, "ok": False,
                 "reason": "当前为显式 MOCK 模式，未连接真实模型，无需也无法自检视觉。"}
@@ -367,7 +367,7 @@ def vision_selftest() -> dict:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
                                  base_url=config.ANTHROPIC_BASE_URL)
         resp = client.messages.create(
-            model=config.LLM_MODEL, max_tokens=64,
+            model=config.VISION_MODEL, max_tokens=64,
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64",
                                              "media_type": "image/png", "data": b64}},
@@ -382,9 +382,9 @@ def vision_selftest() -> dict:
 
     if _looks_like_no_image(reply) or "无图" in reply:
         return {**base, "ok": False, "reply": reply,
-                "reason": f"模型收不到图像：{config.LLM_MODEL} 可能不支持视觉输入，"
+                "reason": f"模型收不到图像：{config.VISION_MODEL} 可能不支持视觉输入，"
                           "或中间网关剥离了图像块。请改用视觉模型"
-                          "（SOULHEALTH_LLM_MODEL=claude-sonnet-4-6）或检查代理配置。"}
+                          "（VISION_MODEL=claude-opus-4-6）或检查代理配置。"}
     if any(k in reply for k in ("红", "赤", "red", "Red")):
         return {**base, "ok": True, "reply": reply,
                 "reason": "视觉链路正常：模型正确识别了探测图颜色，可正常上传报告图片。"}
