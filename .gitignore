@@ -26,7 +26,6 @@ wheels/
 # Frontend
 node_modules/
 web/node_modules/
-web/dist/
 .npm
 .eslintcache
 
