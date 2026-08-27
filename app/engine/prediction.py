@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from app import repository as repo
-from app.standardize import get_registry
+from app.standardize.registry import get_registry
 
 
 # ---------------------------------------------------------------------------
@@ -92,22 +92,22 @@ def compute_clinical_ratios(latest_values: Dict[str, float], age: Optional[int] 
             egfr *= 1.012
         val = round(egfr, 1)
         if val >= 90:
-            interp = "eGFR ≥ 90 mL/min/1.73m²，肾小球滤过功能正常"
+            interp = "eGFR ≥ 90 mL/min/1.73m2，肾小球滤过功能正常"
             status = "ok"
         elif val >= 60:
-            interp = "eGFR 60–89 mL/min/1.73m²，轻度生理性/早期减退"
+            interp = "eGFR 60–89 mL/min/1.73m2，轻度生理性/早期减退"
             status = "normal"
         elif val >= 30:
-            interp = "eGFR 30–59 mL/min/1.73m²，中度肾功能受损，需严格控盐控压并就诊"
+            interp = "eGFR 30–59 mL/min/1.73m2，中度肾功能受损，需严格控盐控压并就诊"
             status = "danger"
         else:
-            interp = "eGFR < 30 mL/min/1.73m²，严重肾功能减退，请尽快肾内科专科随诊"
+            interp = "eGFR < 30 mL/min/1.73m2，严重肾功能减退，请尽快肾内科专科随诊"
             status = "danger"
         ratios.append({
             "key": "egfr_ckd_epi",
             "name": "eGFR 估算肾小球滤过率 (CKD-EPI)",
             "value": val,
-            "unit": "mL/min/1.73m²",
+            "unit": "mL/min/1.73m2",
             "reference": "≥ 90",
             "status": status,
             "interpretation": interp,
@@ -295,7 +295,7 @@ def compute_risk_prediction(profile: dict, latest_obs: Dict[str, float], series_
                 direction_cn="推高风险" if direction == "increase" else "降低风险",
                 impact=round(abs(contrib), 3),
                 current_value=val,
-                unit=meta.unit if meta else "",
+                unit=meta.canonical_unit if meta else "",
                 reason=desc
             ))
 
@@ -374,7 +374,7 @@ def compute_risk_timeline(profile_id: str) -> dict:
         accum_obs = {}
         for r in ready_reports:
             r_date = r["report_date"]
-            obs_rows = repo.list_observations(r["id"])
+            obs_rows = repo.list_observations_by_report(r["id"])
             for o in obs_rows:
                 if o.get("code") and o.get("value_num") is not None:
                     accum_obs[o["code"]] = o["value_num"]

@@ -47,6 +47,15 @@ def generate(profile_id: str, assessment: dict) -> dict:
                               status, plan)
 
 
+def _format_contraindications(raw) -> List[str]:
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        items = [s.strip() for s in raw.replace(";", "；").split("；") if s.strip()]
+        return items if items else [raw]
+    return []
+
+
 def _full_plan(formula: dict, cautions: List[str]) -> dict:
     ingredients = []
     for ing in formula["ingredients"]:
@@ -61,7 +70,7 @@ def _full_plan(formula: dict, cautions: List[str]) -> dict:
         "frequency": formula["frequency"],
         "cycle": formula["cycle"],
         "rationale": formula["rationale"],
-        "contraindications": formula["contraindications"],
+        "contraindications": _format_contraindications(formula["contraindications"]),
         "cautions": cautions,
         "note": "本茶饮为健康管理参考，不是疾病治疗处方；饮用期间如有不适请停用并咨询专业人员。",
     }

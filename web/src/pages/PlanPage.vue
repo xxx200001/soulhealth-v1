@@ -158,8 +158,8 @@
           <div class="contra">
             <b>禁忌与注意</b>
             <ul>
-              <li v-for="(c, i) in p.contraindications" :key="i">{{ c }}</li>
-              <li v-for="(c, i) in p.cautions || []" :key="'c' + i" class="hl">{{ c }}</li>
+              <li v-for="(c, i) in formatList(p.contraindications)" :key="i">{{ c }}</li>
+              <li v-for="(c, i) in formatList(p.cautions)" :key="'c' + i" class="hl">{{ c }}</li>
             </ul>
           </div>
           <p class="tiny">{{ p.note }}</p>
@@ -270,6 +270,15 @@ const GOAL_CN = { liver_care: '肝脏管理', lipid_care: '血脂管理',
   bp_care: '血压管理', kidney_care: '肾功能关注', blood_care: '气血养护',
   general_balance: '均衡养护' }
 const goalLabel = (t) => GOAL_CN[t] || t
+
+function formatList(val) {
+  if (!val) return []
+  if (Array.isArray(val)) return val
+  if (typeof val === 'string') {
+    return val.replace(/;/g, '；').split('；').map((s) => s.trim()).filter(Boolean)
+  }
+  return [String(val)]
+}
 
 async function refresh() {
   const pid = session.profileId

@@ -1,8 +1,49 @@
 <template>
   <div class="page stack">
+    <!-- 综合慢病进展风险时序走势轨迹 (DRP 风险轨迹) -->
+    <section v-if="timelineData?.history?.length" class="card fade-in timeline-card">
+      <div class="row-between" style="align-items: center">
+        <div class="card-title">
+          <span class="dot" style="background: var(--gold-500)"></span>
+          全周期慢病风险演进轨迹（按真实检查日期）
+        </div>
+        <span v-if="latestTimelinePoint" class="badge"
+              :style="{ background: latestTimelinePoint.tier_color + '22', color: latestTimelinePoint.tier_color, borderColor: latestTimelinePoint.tier_color }">
+          当前处于{{ latestTimelinePoint.tier_cn }}区间
+        </span>
+      </div>
+      <p class="tiny muted" style="margin: 4px 0 12px">
+        基于历次真实化验单检查时点回溯重跑风险模型，展示病情随时间演变实线与未来 1Y/3Y/5Y 预测虚线
+      </p>
+
+      <!-- 时间轴圆点步进链 -->
+      <div class="timeline-step-wrap">
+        <div class="timeline-steps">
+          <div v-for="(p, i) in timelineData.history" :key="p.date" class="t-step-item">
+            <div class="t-dot" :style="{ background: p.tier_color }">
+              <span class="t-inner-dot"></span>
+            </div>
+            <span class="t-date">{{ p.date }}</span>
+            <b class="t-prob num" :style="{ color: p.tier_color }">{{ p.percentage }}</b>
+            <span class="t-tier">{{ p.tier_cn }}</span>
+          </div>
+
+          <!-- 未来预测虚线点 -->
+          <div v-for="f in (timelineData.future || []).filter(x => x.type === 'projection')" :key="f.date" class="t-step-item projection">
+            <div class="t-dot proj" :style="{ borderColor: f.tier_color }">
+              <span class="t-inner-dot proj" :style="{ background: f.tier_color }"></span>
+            </div>
+            <span class="t-date">{{ f.label }}</span>
+            <b class="t-prob num proj" :style="{ color: f.tier_color }">{{ f.percentage }}</b>
+            <span class="t-tier proj">{{ f.tier_cn }} (预估)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 指标选择 -->
     <section class="card fade-in">
-      <div class="card-title"><span class="dot"></span>健康趋势</div>
+      <div class="card-title"><span class="dot"></span>单项生化指标趋势</div>
       <p class="muted" style="margin: 6px 0 var(--sp-3)">
         按真实检查日期排列的跨报告变化；点选指标查看
       </p>
@@ -114,6 +155,12 @@ const loaded = ref(false)
 const codes = ref([])
 const current = ref('')
 const series = ref(null)
+const timelineData = ref(null)
+
+const latestTimelinePoint = computed(() => {
+  const h = timelineData.value?.history
+  return h && h.length ? h[h.length - 1] : null
+})
 
 const chartPoints = computed(() => series.value?.insight?.points || [])
 const cmp = computed(() => series.value?.insight?.compare || null)
@@ -151,8 +198,16 @@ async function pick(code) {
 
 onMounted(async () => {
   try {
-    const r = await api.metricCodes(session.profileId)
-    codes.value = (r.items || []).filter((c) => c.code)
+    const [r, tl] = await Promise.allSettled([
+      api.metricCodes(session.profileId),
+      api.riskTimeline(session.profileId),
+    ])
+    if (r.status === 'fulfilled') {
+      codes.value = (r.value.items || []).filter((c) => c.code)
+    }
+    if (tl.status === 'fulfilled') {
+      timelineData.value = tl.value
+    }
   } finally { loaded.value = true }
   const pre = route.query.code
   const first = codes.value.find((c) => c.code === pre) || codes.value[0]
@@ -161,6 +216,77 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.timeline-card {
+  border: 1.5px solid var(--gold-300);
+  background: linear-gradient(180deg, rgba(254, 252, 245, 0.7) 0%, #fff 100%);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+}
+.timeline-step-wrap {
+  overflow-x: auto;
+  padding: 10px 4px;
+}
+.timeline-steps {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  min-width: max-content;
+}
+.t-step-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  position: relative;
+  min-width: 75px;
+}
+.t-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.15);
+}
+.t-dot.proj {
+  background: #fff;
+  border: 2px dashed;
+}
+.t-inner-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+.t-inner-dot.proj {
+  width: 4px;
+  height: 4px;
+}
+.t-date {
+  font-size: 11px;
+  color: var(--ink-500);
+  margin-top: 4px;
+}
+.t-prob {
+  font-size: 15px;
+}
+.t-tier {
+  font-size: 11px;
+  color: var(--ink-600);
+}
+.t-tier.proj {
+  color: var(--brand-700);
+  font-style: italic;
+}
+
 .cnt { font-size: 10px; opacity: .65; margin-left: 3px; }
 .cmp-body { display: flex; align-items: center; gap: var(--sp-4);
   margin-top: var(--sp-2); }
