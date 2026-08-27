@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0f1a17">
+<title>病情预测平台</title>
+<link rel="stylesheet" href="/app.css?v=3.1">
+<script src="/vendor/echarts.min.js"></script>
+</head>
+<body>
+
+<!-- 图标栏（桌面左侧 / 移动底部）。四个目的地对应四件事，不再是"页签+下拉框" -->
+<nav class="rail" aria-label="主导航">
+  <div class="mark" title="DRP 病情风险预测平台">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px">
+      <path d="M3 12h3.5l2.5-6 4 12 3-8 2 2h3"/>
+    </svg>
+  </div>
+  <button class="navbtn" data-go="patients" aria-current="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    患者
+  </button>
+  <button class="navbtn" data-go="work">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12h4l2.5-7 4 14L16 12h5"/></svg>
+    评估
+  </button>
+  <button class="navbtn" data-go="trend">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+    趋势
+  </button>
+  <button class="navbtn" data-go="admin">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="18" r="2"/></svg>
+    管理
+  </button>
+  <div class="grow"></div>
+  <div class="build" id="railVersion">…</div>
+</nav>
+
+<div class="main">
+  <!-- 当前患者上下文：任何页面都能看见自己在谁的档案里 -->
+  <div class="ctxbar">
+    <div class="inner" id="ctxInner">
+      <div class="avatar" id="ctxAvatar">—</div>
+      <div class="grow" style="flex:1;min-width:0">
+        <div class="mono-id" id="ctxId">未选择患者</div>
+        <div class="ctx-sub" id="ctxSub">先在「患者」里选一位，再开始评估</div>
+      </div>
+      <button class="btn ghost sm push" id="btnSwitch">切换</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+    <!-- ==================== 患者 ==================== -->
+    <section class="page on" id="page-patients">
+      <p class="eyebrow">Patients</p>
+      <h1 class="title">患者档案</h1>
+      <p class="lede">档案不含姓名、证件号、手机号；编号中若含个人信息会被自动拦截。</p>
+
+      <div class="card">
+        <header>
+          <h2>全部患者</h2>
+          <span class="note" id="patientCount"></span>
+        </header>
+        <div class="field">
+          <input id="patientSearch" placeholder="按编号筛选…" autocomplete="off">
+        </div>
+        <div class="scroller" id="patientList"></div>
+        <div class="divider"></div>
+        <button class="btn block" id="btnNewPatient">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          新建患者
+        </button>
+      </div>
+
+      <div class="card flat">
+        <header><h2>库存概览</h2></header>
+        <div class="stat-row" id="dbStats"></div>
+      </div>
+    </section>
+
+    <!-- ==================== 评估 ==================== -->
+    <section class="page" id="page-work">
+      <p class="eyebrow">Assessment</p>
+      <h1 class="title">纵向风险评估</h1>
+      <p class="lede">批量导入历史报告 → 建立真实检查日期时间轴 → 纵向风险预测 → 后续健康跟踪。</p>
+
+      <div class="steps four" id="stepBar">
+        <button class="step" data-step="ingest" data-state="now">
+          <span class="n">STEP 1</span><span class="t">导入历史资料</span></button>
+        <button class="step" data-step="timeline" data-state="idle">
+          <span class="n">STEP 2</span><span class="t">建立健康时间轴</span></button>
+        <button class="step" data-step="predict" data-state="idle">
+          <span class="n">STEP 3</span><span class="t">风险预测</span></button>
+        <button class="step" data-step="followup" data-state="idle">
+          <span class="n">STEP 4</span><span class="t">健康跟踪</span></button>
+      </div>
+
+      <!-- STEP 1：导入历史资料（支持批量） -->
+      <div class="card" id="sec-ingest">
+        <header>
+          <h2>导入历史检查资料</h2>
+          <span class="note">可一次选择多张图片；含姓名/证件/手机号的文本会被拒收</span>
+        </header>
+        <div class="field-row">
+          <div class="keep" style="display:flex;gap:8px;flex-wrap:wrap">
+            <input type="file" id="repImage" accept="image/*" multiple hidden>
+            <button class="btn sm" id="btnOCR" title="批量选择多份不同日期的化验单图片，逐份识别">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-2px;margin-right:4px">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+              </svg>
+              批量上传化验单（可多选）
+            </button>
+            <button class="btn ghost sm" id="btnSample">填充示例</button>
+          </div>
+        </div>
+        <p class="muted" style="margin:10px 0 0">
+          上传后系统自动识别<b>检查日期</b>，你只需确认或修改；识别不出时才需要手动填写。
+        </p>
+
+        <div id="pendingWrap" hidden>
+          <div class="divider"></div>
+          <div class="t1line" style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <b>待确认入库</b>
+            <span class="muted" id="pendingCount"></span>
+            <button class="btn sm push" id="btnConfirmAll">全部确认入库</button>
+          </div>
+          <div id="pendingList"></div>
+        </div>
+
+        <details style="margin-top:12px" id="detailsManualText">
+          <summary style="font-size:12.5px;color:var(--ink-3);cursor:pointer;user-select:none;margin-bottom:8px">或展开手动粘贴文本</summary>
+          <div class="field-row" style="margin-bottom:8px">
+            <div style="flex:1 1 160px">
+              <label class="fld" for="repDate">该报告的检查日期</label>
+              <input type="date" id="repDate">
+            </div>
+          </div>
+          <div class="field">
+            <textarea id="repText" rows="6" spellcheck="false"
+              placeholder="ALT 62 U/L 9-50&#10;GLU 7.2 mmol/L 3.9-6.1&#10;TG 2.9 mmol/L 0.4-1.7"></textarea>
+          </div>
+          <button class="btn sm" id="btnParse" style="margin-top:8px">手动解析并入库</button>
+        </details>
+
+        <span class="muted" id="parseStat" style="margin-top:10px;display:inline-block"></span>
+
+        <div id="parseOut" hidden>
+          <div class="divider"></div>
+          <div class="stat-row" id="parseStats"></div>
+          <div class="scroller" id="parseRows" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- 历史检查资料：逐份可见、可管理（不会互相覆盖） -->
+      <div class="card" id="sec-reports">
+        <header>
+          <h2>我的历史检查资料</h2>
+          <span class="note">每份报告独立入库，不会互相覆盖</span>
+        </header>
+        <div class="rep-summary" id="reportsSummary">还没有上传过报告</div>
+        <div id="reportTable"></div>
+      </div>
+
+      <!-- STEP 2：数据确认 · 健康时间轴 -->
+      <div class="card" id="sec-timeline">
+        <header>
+          <h2>数据确认 · 健康时间轴</h2>
+          <span class="note">按真实检查日期统计，不按上传时间</span>
+        </header>
+        <div id="timelineBox">
+          <div class="empty"><b>还没有可确认的数据</b>先在上面导入至少一份历史报告</div>
+        </div>
+      </div>
+
+      <div class="card" id="sec-records">
+        <header>
+          <h2>历史化验记录</h2>
+          <span class="note" id="recordsNote"></span>
+        </header>
+        <div class="scroller" id="recordList"></div>
+      </div>
+
+      <!-- STEP 3：纵向风险预测 -->
+      <div class="card" id="sec-predict">
+        <header>
+          <h2>纵向风险预测</h2>
+          <span class="note">概率由统计模型基于全部历史数据计算，非 AI 对话生成</span>
+        </header>
+
+        <div class="concern">
+          <div class="fld" style="margin-bottom:8px">这次你最想了解什么？（不影响后台全身扫描，只决定先回答什么）</div>
+          <div class="chips" id="concernChips">
+            <button class="chip" data-concern="liver">肝脏</button>
+            <button class="chip" data-concern="cardio">心血管</button>
+            <button class="chip" data-concern="glucose">血糖代谢</button>
+            <button class="chip" data-concern="renal">肾脏</button>
+            <button class="chip" data-concern="other">其他</button>
+            <button class="chip on" data-concern="all">不知道，请全面分析</button>
+          </div>
+        </div>
+
+        <button class="btn block" id="btnPredict" style="margin-top:14px">运行纵向风险分析</button>
+        <span class="muted" id="predStat"></span>
+
+        <div id="predictOut" hidden>
+          <div class="demo-banner" id="demoBanner" hidden></div>
+
+          <div class="divider"></div>
+          <h3 class="blocktitle">① 本次健康风险总览</h3>
+          <div class="concern-answer" id="concernAnswerBox" hidden></div>
+          <div id="riskOverviewBox"></div>
+
+          <div class="divider"></div>
+          <h3 class="blocktitle">② 未来健康风险预测</h3>
+          <p class="endpoint-line" id="endpointLabel"></p>
+          <div class="hero">
+            <div class="horizon" id="heroHorizon">3Y</div>
+            <div class="prob" id="heroProb">—</div>
+            <div class="tierline" id="heroTier"></div>
+          </div>
+          <p class="hero-plain" id="heroPlain"></p>
+          <div class="tierscale" id="tierScale"></div>
+          <div class="horizon-mini clickable" id="horizonMini"></div>
+          <p class="judge" id="modelJudge"></p>
+          <p class="muted" id="predBasis"></p>
+          <p class="muted" id="servedBy" style="margin:12px 0 0"></p>
+        </div>
+      </div>
+
+      <div class="card" id="sec-factors" hidden>
+        <header>
+          <h2>③ 为什么 · 风险归因</h2>
+          <span class="note" id="factorHorizonNote">每次预测实时分析各指标贡献度</span>
+        </header>
+        <div class="factors" id="factorList"></div>
+        <div class="legend">
+          <span><i style="background:var(--t4)"></i>推高风险</span>
+          <span><i style="background:var(--cool)"></i>拉低风险</span>
+          <span><i style="border:1px dashed var(--line);background:transparent"></i>本次未检查</span>
+        </div>
+        <div class="divider"></div>
+        <div class="prose" id="narrative"></div>
+        <p class="muted" id="monotonicNote" style="margin:8px 0 0"></p>
+      </div>
+
+      <div class="card" id="sec-referral" hidden>
+        <header>
+          <h2>④ 就医建议与生活方式</h2>
+          <span class="note">科室/检查来自规则引擎；饮食运动摘要来自 AI 深度分析</span>
+        </header>
+        <div id="referralBox"></div>
+        <div class="divider"></div>
+        <div id="lifestyleBox"></div>
+      </div>
+
+      <!-- STEP 4：后续健康跟踪（普通用户人话版） -->
+      <div class="card" id="sec-followup">
+        <header>
+          <h2>后续健康跟踪</h2>
+          <span class="note">上传新报告后，系统自动与上次比较</span>
+        </header>
+        <div class="autocompare" id="autoCompareBox" hidden></div>
+        <div id="followupPlain">
+          <div class="empty"><b>先完成一次风险预测</b>之后这里会给出建议复查时间与项目</div>
+        </div>
+
+        <details class="fold" style="margin-top:14px">
+          <summary>科研随访（专业字段，仅研究人员使用）</summary>
+          <div class="field" style="margin-top:12px">
+            <label class="fld" for="fbTrace">回填哪一次预测</label>
+            <select id="fbTrace"></select>
+          </div>
+          <div class="field-row">
+            <div>
+              <label class="fld" for="fbEvent">随访结局</label>
+              <select id="fbEvent">
+                <option value="0">随访期内未发生事件</option>
+                <option value="1">随访期内发生了事件</option>
+              </select>
+            </div>
+            <div>
+              <label class="fld" for="fbDays">距预测天数</label>
+              <input type="number" id="fbDays" value="180" min="0">
+            </div>
+          </div>
+          <label class="check" style="margin:12px 0 14px">
+            <input type="checkbox" id="fbConsent"> 用户已授权保存本条随访反馈
+          </label>
+          <button class="btn" id="btnFeedback">提交回流</button>
+        </details>
+      </div>
+
+      <div class="disclaimer" id="disclaimerBar"></div>
+    </section>
+
+    <!-- ==================== 趋势 ==================== -->
+    <section class="page" id="page-trend">
+      <p class="eyebrow">Trajectory</p>
+      <h1 class="title">趋势追踪</h1>
+      <p class="lede">单次指标不准，趋势才准。本页所有曲线横轴都是<b>真实检查日期</b>；「模型当时的判断」（按预测时间的审计走势）在管理台复盘。</p>
+
+      <!-- V3.1 流程：入库完成 → 先到本页看趋势 → 倒计时自动进入风险评估 -->
+      <div class="trend-banner" id="trendAutoBanner" hidden></div>
+
+      <div class="card">
+        <header>
+          <h2>风险走势（按检查日期）</h2>
+          <span class="note">历史用实线 · 未来预测用虚线，预测≠确定结果</span>
+        </header>
+        <div class="chips" id="riskHorizonChips" style="margin-bottom:8px">
+          <button class="chip" data-h="1y">1 年风险</button>
+          <button class="chip on" data-h="3y">3 年风险</button>
+          <button class="chip" data-h="5y">5 年风险</button>
+        </div>
+        <div class="chart tall" id="riskChart"></div>
+        <p class="muted" id="riskBasisNote" style="margin:8px 0 0"></p>
+        <div class="empty" id="riskEmpty" hidden>
+          <b>还画不出走势</b>至少需要一份已入库的历史报告
+        </div>
+      </div>
+
+      <div class="card">
+        <header>
+          <h2>本次 vs 上次</h2>
+          <span class="note" id="compareDates">超过临床变化阈值才判为真实变化</span>
+        </header>
+        <div class="exam-strip" id="examStrip" hidden></div>
+        <div id="compareList"></div>
+        <div class="empty" id="compareEmpty" hidden>
+          <b>还差一次记录</b>同一指标累计两次以上才能做对比
+        </div>
+      </div>
+
+      <div class="card">
+        <header>
+          <h2>指标历史趋势</h2>
+          <span class="note">显示该指标全部真实检查时间点</span>
+        </header>
+        <div class="chips" id="seriesRangeChips" style="margin-bottom:8px">
+          <button class="chip on" data-range="all">全部</button>
+          <button class="chip" data-range="1">近 1 年</button>
+          <button class="chip" data-range="3">近 3 年</button>
+          <button class="chip" data-range="5">近 5 年</button>
+        </div>
+        <div class="field">
+          <label class="fld" for="seriesSel">选择指标</label>
+          <select id="seriesSel"></select>
+        </div>
+        <div class="chart" id="seriesChart"></div>
+      </div>
+
+      <div class="card">
+        <header>
+          <h2>趋势报告</h2>
+          <span class="note">自动生成，已通过合规审核</span>
+        </header>
+        <div class="prose" id="trendText">选择患者后自动生成</div>
+      </div>
+
+      <div class="card" id="sec-trend-interventions">
+        <header>
+          <h2>🤖 AI 深度分析</h2>
+          <span class="note">AI 只解释模型与规则的结果，不自行创造风险概率</span>
+        </header>
+        <div id="aiTop3"></div>
+        <div id="aiAdvisorContainer">
+          <div class="ai-status-bar">
+            <span class="ai-badge-pulse"><i class="pulse-dot"></i> <span id="aiModelSource">AI 临床大模型引擎已就绪</span></span>
+            <button class="btn ghost sm" id="btnRefreshAI">⚡ 重新由 AI 大模型生成</button>
+          </div>
+          <div id="trendInterventionBox" style="margin-top:14px"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 管理 ==================== -->
+    <section class="page" id="page-admin">
+      <p class="eyebrow">Operations</p>
+      <h1 class="title">模型运维</h1>
+      <p class="lede">注册表是唯一账本：同一时刻只允许一个 ACTIVE，灰度与回滚都在这里落账。</p>
+
+      <div class="card">
+        <header>
+          <h2>模型版本</h2>
+          <button class="btn ghost sm" id="btnRefreshAdmin">刷新</button>
+        </header>
+        <div id="versionList"></div>
+        <div class="divider"></div>
+        <button class="btn ghost sm" id="btnRollback">回滚到上一版本</button>
+      </div>
+
+      <div class="card">
+        <header>
+          <h2>特征漂移</h2>
+          <span class="note">监测线上数据与训练数据的分布偏移</span>
+        </header>
+        <div class="field-row">
+          <div>
+            <label class="fld" for="driftHorizon">时程</label>
+            <select id="driftHorizon"></select>
+          </div>
+          <div class="keep"><button class="btn sm" id="btnDrift">检查漂移</button></div>
+        </div>
+        <div id="driftBox" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card">
+        <header>
+          <h2>错误样本复盘</h2>
+          <span class="note">漏诊样本优先排列，方便重点复盘</span>
+        </header>
+        <button class="btn ghost sm" id="btnReview">加载复盘队列</button>
+        <p class="muted" id="reviewSummary"></p>
+        <div class="scroller" id="reviewList"></div>
+      </div>
+
+      <div class="card">
+        <header>
+          <h2>A/B 对照</h2>
+          <span class="note">对比两个模型版本的线上表现</span>
+        </header>
+        <div class="field-row">
+          <div><label class="fld" for="abChampion">champion</label><input id="abChampion"></div>
+          <div><label class="fld" for="abChallenger">challenger</label><input id="abChallenger"></div>
+        </div>
+        <div class="field-row" style="margin-top:10px">
+          <div><label class="fld" for="abHorizon">时程</label><select id="abHorizon"></select></div>
+          <div class="keep"><button class="btn sm" id="btnAB">对照</button></div>
+        </div>
+        <div class="prose mono" id="abBox" style="margin-top:14px">填入两个版本号后对照</div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<dialog id="dlgPatient">
+  <h2>新建患者档案</h2>
+  <p class="muted" style="margin:0 0 16px">编号请用业务号（如 MRN-2026-0815），不要用姓名或证件号。</p>
+  <div class="field">
+    <label class="fld" for="npId">患者编号</label>
+    <input id="npId" placeholder="MRN-2026-0815" autocomplete="off">
+  </div>
+  <div class="field-row">
+    <div>
+      <label class="fld" for="npSex">性别</label>
+      <select id="npSex"><option value="M">男</option><option value="F">女</option></select>
+    </div>
+    <div>
+      <label class="fld" for="npBirth">出生日期</label>
+      <input type="date" id="npBirth">
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn ghost" id="npCancel">取消</button>
+    <button class="btn" id="npOk">创建</button>
+  </div>
+</dialog>
+
+<dialog id="dlgReport">
+  <h2>报告原文</h2>
+  <p class="muted" id="dlgReportMeta" style="margin:0 0 12px"></p>
+  <pre class="rawtext" id="dlgReportText"></pre>
+  <p class="muted" style="margin:10px 0 0;font-size:12px">
+    为保护隐私（规范 1.2），系统不保存原始图片，仅保留已脱敏校验的识别文本。</p>
+  <div class="actions"><button class="btn" id="dlgReportClose">关闭</button></div>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js?v=3.1"></script>
+</body>
+</html>

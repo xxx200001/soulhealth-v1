@@ -19,9 +19,11 @@ async function request(path, options = {}) {
     throw new Error('无法连接后端服务。请确认已运行 python run.py')
   }
   if (res.status === 401) {
-    localStorage.removeItem('sh_token')
-    localStorage.removeItem('sh_user')
-    window.dispatchEvent(new CustomEvent('sh:unauthorized'))
+    if (!path.startsWith('/api/auth/login') && !path.startsWith('/api/auth/register')) {
+      localStorage.removeItem('sh_token')
+      localStorage.removeItem('sh_user')
+      window.dispatchEvent(new CustomEvent('sh:unauthorized'))
+    }
     throw new Error(await detailOf(res) || '登录已失效，请重新登录')
   }
   if (!res.ok) throw new Error(await detailOf(res) || `请求失败 HTTP ${res.status}`)
@@ -90,6 +92,7 @@ export const api = {
   analysisScope: (pid) => request(`/api/assessments/scope?${q({ profile_id: pid })}`),
   latestAssessment: (pid) => request(`/api/assessments/latest?${q({ profile_id: pid })}`),
   assessmentHistory: (pid) => request(`/api/assessments/history?${q({ profile_id: pid })}`),
+  riskTimeline: (pid) => request(`/api/assessments/risk-timeline?${q({ profile_id: pid })}`),
   getAssessment: (aid) => request(`/api/assessments/${aid}`),
   getIssue: (iid) => request(`/api/assessments/issues/${iid}`),
 

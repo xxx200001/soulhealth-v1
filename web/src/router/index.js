@@ -45,15 +45,24 @@ const routes = [
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
+import { useSessionStore } from '../store/session'
+
 const router = createRouter({ history: createWebHistory(), routes })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const hasToken = !!localStorage.getItem('sh_token')
   if (!to.meta.public && !hasToken) return { path: '/login', query: { r: to.fullPath } }
   if (to.path === '/login' && hasToken) return { path: '/' }
-  // 所有数据都归属档案：未建档先走首次进入流程（P01）
-  if (to.meta.needProfile && !localStorage.getItem('sh_pid')) {
-    return { path: '/onboard' }
+
+  // 所有数据都归属档案：如果已登录但本地没有选定档案，尝试先从服务端自动加载已有档案
+  if (to.meta.needProfile && hasToken && !localStorage.getItem('sh_pid')) {
+    try {
+      const session = useSessionStore()
+      await session.ensureProfile()
+    } catch { /* ignore */ }
+    if (!localStorage.getItem('sh_pid')) {
+      return { path: '/onboard' }
+    }
   }
   return true
 })

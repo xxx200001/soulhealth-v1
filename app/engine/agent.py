@@ -44,7 +44,9 @@ _SYMPTOM_TOPIC = {  # 症状 → 相关指标码（档案检索映射）
     "乏力": ["HGB", "GLU", "ALT", "TSH"], "累": ["HGB", "GLU", "ALT"],
     "口渴": ["GLU", "HBA1C"], "多尿": ["GLU", "CREA"],
     "心慌": ["SBP", "DBP", "HGB"], "水肿": ["CREA", "UREA", "ALB"],
-    "关节": ["UA", "CRP"], "腹": ["ALT", "AST", "GGT", "AMY"],
+    "关节": ["UA", "CRP"], "膝": ["UA", "CRP"], "半月板": ["CRP"],
+    "韧带": ["CRP"], "骨": ["UA", "CRP"],
+    "腹": ["ALT", "AST", "GGT", "AMY"],
     "皮肤黄": ["TBIL", "DBIL", "ALT"], "睡": ["SBP", "DBP"],
 }
 
@@ -52,6 +54,13 @@ _SYMPTOM_TOPIC = {  # 症状 → 相关指标码（档案检索映射）
 # 匹配时按声明顺序扫描，命中的关键词会从待匹配文本中移除，
 # 避免「拉肚子」再次命中「肚子」这类子串重复。
 _SYMPTOM_RELIEF: List[Tuple[str, List[str]]] = [
+    ("膝", ["急性肿胀积液期减少下蹲、爬楼梯、爬山及长时间站立行走，避免过度负重加重软骨磨损",
+           "进行非负重股四头肌肌力锻炼（如平躺直腿抬高、靠墙微屈静蹲、平地慢骑车），增强关节周围肌群力量与稳定性",
+           "饮食多补充抗炎优质蛋白（深海鱼等）、高钙膳食、维生素D与胶原软骨基质养分，严格限酒与高盐腌制食品",
+           "若出现关节突发卡住（绞锁）、剧烈疼痛或严重无法着地，请及时至骨科/关节外科专科面诊"]),
+    ("半月板", ["半月板损伤期间避免深蹲、旋转扭膝、急停变向及爬楼梯动作",
+             "可练习平躺直腿抬高训练（每次抬起 30度 坚持 10 秒，每组 15 次），强化股四头肌支撑",
+             "如伴关节积液肿胀可适度抬高患肢休息，控制体重以减轻关节面压强"]),
     ("拉肚子", ["重点是补水补盐：少量多次喝温水或口服补液盐，先别喝含糖饮料",
                "吃清淡易消化的（粥、软面条），暂停生冷、油腻、奶制品和辛辣"]),
     ("便秘", ["把饮水加到每天 1500–2000 ml，多吃蔬菜、燕麦、火龙果等富含膳食纤维的食物",
@@ -61,8 +70,8 @@ _SYMPTOM_RELIEF: List[Tuple[str, List[str]]] = [
     ("心慌", ["先坐下或靠着休息，做几组缓慢的深呼吸（吸气 4 秒、呼气 6 秒）",
              "数一下 1 分钟脉搏并记下来，今天避开咖啡、浓茶、酒和剧烈活动"]),
     ("口渴", ["规律地少量多次饮水；同时留意是否伴随多尿、体重下降，这些要结合血糖一起看"]),
-    ("关节", ["急性疼痛期先让关节休息，48 小时内冷敷、之后改热敷，每次 15–20 分钟",
-             "少吃动物内脏、浓肉汤，别喝啤酒——档案里有尿酸问题时尤其要注意"]),
+    ("关节", ["急性酸痛与积液期先让关节休息，避免剧烈承重与频繁下蹲",
+             "饮食补充深海鱼 Omega-3 与高钙食物抗炎护软骨，少吃高盐腌制、浓肉汤并严格限酒"]),
     ("乏力", ["今晚保证 7–8 小时睡眠，白天可以安排一次 20 分钟左右的小憩",
              "三餐规律、别不吃主食，配合散步等轻度活动，比一直躺着更容易恢复"]),
     ("失眠", ["固定上床和起床时间，睡前 1 小时放下手机、把灯光调暗",
@@ -249,11 +258,27 @@ def _retrieve(profile_id: str, intent: str, slots: dict, text: str) -> dict:
         if len(kw_events) >= config.AGENT_CONTEXT_MAX_EVENTS:
             break
 
+    # 影像与检查所见检索
+    all_findings = repo.list_findings(profile_id)
+    kw_findings = []
+    text_joint_words = ("膝", "关节", "半月板", "韧带", "积液", "软骨", "骨", "退变", "退行性", "囊性变", "滑膜")
+    for f in all_findings:
+        f_text = f["organ"] + " " + f["description"]
+        if any(w in text for w in text_joint_words) and any(w in f_text for w in text_joint_words):
+            kw_findings.append(f)
+        elif any(k in f_text for k in _tokens(text)):
+            kw_findings.append(f)
+        if len(kw_findings) >= 4:
+            break
+    if not kw_findings and all_findings and intent in ("report", "diet", "tea", "general"):
+        kw_findings = all_findings[:3]
+
     top_issues = [{"title": it["title"], "level": it["level"],
                    "summary": it["summary"]} for it in issues
                   if it["rank"] <= 3]
-    return {"series": series, "events": kw_events, "top_issues": top_issues,
-            "has_archive": bool(series or kw_events or top_issues)}
+    return {"series": series, "events": kw_events, "findings": kw_findings,
+            "top_issues": top_issues,
+            "has_archive": bool(series or kw_events or kw_findings or top_issues)}
 
 
 def _tokens(text: str) -> List[str]:
@@ -283,7 +308,9 @@ def _compose_sections(profile_id: str, intent: str, slots: dict,
         g = ins.latest.grade
         tag = f"，{GRADE_LABELS[g]}" if g else "，在参考范围内"
         archive.append(trend_phrase(ins, name, ins.latest.unit or "") + tag)
-    for e in ctx["events"][:3]:
+    for f in ctx.get("findings", [])[:3]:
+        archive.append(f"检查所见（{f['observed_at']}·{f['organ']}）：{f['description']}")
+    for e in ctx["events"][:2]:
         archive.append(f"既往记录（{e['event_date']}）：{e['content'][:36]}")
     if not archive:
         archive.append("档案中暂无与本问题直接相关的历史记录；"
@@ -297,6 +324,9 @@ def _compose_sections(profile_id: str, intent: str, slots: dict,
         extra = f"（{ins.persistent_direction}）" if ins.persistent_direction else ""
         focus.append(f"{name}当前{GRADE_LABELS[ins.latest.grade]}{extra}，"
                      f"与本次问题的相关性值得留意")
+    for f in ctx.get("findings", [])[:2]:
+        if any(w in f["description"] for w in ("损伤", "积液", "退变", "退行性", "狭窄", "撕裂", "囊性变", "肿胀", "脂肪肝")):
+            focus.append(f"影像提示「{f['organ']}」存在异常变化：{f['description'][:45]}…，需配合专科建议与生活养护")
     for t in ctx["top_issues"][:2]:
         focus.append(f"你档案中的「{t['title']}」当前为"
                      f"{_level_cn(t['level'])}：{t['summary']}")

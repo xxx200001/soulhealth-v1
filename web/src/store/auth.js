@@ -26,9 +26,9 @@ export const useAuthStore = defineStore('auth', {
         this.user = r.user
         localStorage.setItem('sh_user', JSON.stringify(r.user))
         return r.user
-      } catch {
-        this.logout()
-        return null
+      } catch (err) {
+        // 普通网络波动或服务暂时不可用时，保留本地登录状态，绝不随意退出登录
+        return this.user
       }
     },
     logout() {

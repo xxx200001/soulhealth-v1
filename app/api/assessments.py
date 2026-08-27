@@ -40,7 +40,16 @@ def latest(profile_id: str, user: dict = Depends(current_user)):
     if a is None:
         return {"assessment": None}
     a["issues"] = repo.list_issues(a["id"])
+    a["prediction"] = a.get("summary", {}).get("prediction")
+    a["risk_timeline"] = a.get("summary", {}).get("risk_timeline")
     return {"assessment": a}
+
+
+@router.get("/risk-timeline")
+def risk_timeline(profile_id: str, user: dict = Depends(current_user)):
+    scoped_profile(profile_id, user)
+    from ..engine.prediction import compute_risk_timeline
+    return compute_risk_timeline(profile_id)
 
 
 @router.get("/history")
@@ -56,6 +65,8 @@ def get_assessment(aid: str, user: dict = Depends(current_user)):
         raise HTTPException(404, "分析不存在")
     scoped_profile(a["profile_id"], user)
     a["issues"] = repo.list_issues(aid)
+    a["prediction"] = a.get("summary", {}).get("prediction")
+    a["risk_timeline"] = a.get("summary", {}).get("risk_timeline")
     return a
 
 

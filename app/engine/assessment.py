@@ -112,6 +112,22 @@ ISSUE_GROUPS: List[dict] = [
      "actions": ["以每周 0.5kg 的速度温和减重",
                  "执行食补方案中的能量结构调整",
                  "力量训练每周 2 次以保住肌肉"]},
+    {"key": "joint", "title": "骨关节与运动系统", "goal": "joint_care",
+     "codes": [],
+     "finding_kw": ["骨关节", "退行性", "退变", "半月板", "软骨", "交叉韧带", "韧带",
+                    "积液", "滑膜", "骨赘", "骨刺", "囊性变", "骨质增生", "关节间隙",
+                    "髌骨", "髌", "膝关节", "肩关节", "髋关节", "颈椎", "腰椎",
+                    "椎间盘", "椎体", "滑脱", "膨出", "突出", "撕裂", "缺血性改变",
+                    "水肿", "肩袖", "关节面", "肿胀", "骨质疏松", "软组织"],
+     "meaning": "磁共振(MRI)/CT/超声等影像学检查提示关节退行性变、软骨磨损、半月板或韧带损伤、"
+                "滑膜积液或骨赘增生。常见于中老年生理性退变、长期负重或运动劳损，通过科学营养支持"
+                "与非负重肌力强化，可有效减轻滑膜水肿充血并保护关节寿命。",
+     "future": "若持续进行爬山、深蹲、负重上下楼梯等剧烈冲击性运动，软骨磨损与关节腔积液可能进一步加重；"
+               "在控制体重、避免过度负重、补充抗炎与软骨基质营养并强化股四头肌后，多数人的关节肿痛与活动受限可在 6–12 周内获得明显改善。",
+     "actions": ["急性期及积液肿胀期间减少下蹲、爬楼梯、爬山及长时间负重行走，必要时佩戴护膝保护",
+                 "进行非负重肌力练习（如卧位直腿抬高、靠墙微屈静蹲、游泳或平地慢骑车），增强关节周围肌群力量",
+                 "按食补方案补充抗炎优质蛋白（深海鱼等）、高钙膳食、维D与软骨基质养分，控制体重减少承重",
+                 "如出现关节突然卡住（绞锁）、剧烈疼痛或严重活动障碍，建议至骨科/关节外科专科面诊评估"]},
     {"key": "inflam", "title": "炎症指标", "goal": "general_balance",
      "codes": ["CRP"],
      "meaning": "C反应蛋白是非特异性的炎症标志，轻度升高常见于近期感染、"
@@ -121,13 +137,18 @@ ISSUE_GROUPS: List[dict] = [
                  "持续升高或伴发热请及时就医"]},
 ]
 
-_SRC_CN = {"lab_report": "检验报告", "ultrasound_report": "检查报告",
-           "checkup": "体检报告", "other": "健康资料"}
+_SRC_CN = {"lab_report": "检验报告", "ultrasound_report": "超声报告",
+           "mri_report": "磁共振(MRI)", "ct_report": "CT检查",
+           "imaging_report": "影像检查", "xray_report": "X光/DR",
+           "clinical_note": "病历小结", "checkup": "体检报告", "other": "健康资料"}
+
+
+from .prediction import compute_risk_prediction, compute_risk_timeline
 
 
 # ================================================================ 入口
 def run_assessment(profile_id: str, force: bool = False) -> dict:
-    """创建（或复用）一次健康分析。返回 assessment 行 + issues。"""
+    """创建（或复用）一次健康分析。返回 assessment 行 + issues + DRP 风险预测。"""
     snap = repo.input_snapshot(profile_id)
     ihash = repo.snapshot_hash(snap)
 
@@ -136,6 +157,18 @@ def run_assessment(profile_id: str, force: bool = False) -> dict:
         if latest and latest["input_hash"] == ihash:
             latest["issues"] = repo.list_issues(latest["id"])
             latest["cached"] = True
+            latest["prediction"] = latest.get("summary", {}).get("prediction")
+            latest["risk_timeline"] = latest.get("summary", {}).get("risk_timeline")
+            if not latest["prediction"]:
+                profile = repo.get_profile(profile_id)
+                latest_obs = {}
+                for c in repo.all_codes(profile_id):
+                    code = c["code"]
+                    rows = repo.series_by_code(profile_id, code)
+                    if rows:
+                        latest_obs[code] = rows[-1]["value"]
+                latest["prediction"] = compute_risk_prediction(profile or {}, latest_obs, [])
+                latest["risk_timeline"] = compute_risk_timeline(profile_id)
             return latest
 
     a = repo.create_assessment(profile_id, snap, ihash)
@@ -146,13 +179,29 @@ def run_assessment(profile_id: str, force: bool = False) -> dict:
         for it in issues:
             counts[it["level"]] += 1
         top_titles = [it["title"] for it in issues if it["rank"] <= 3]
+
+        # 计算 DRP 多时程风险预测与临床衍生指标
+        profile = repo.get_profile(profile_id)
+        latest_obs = {}
+        for c in repo.all_codes(profile_id):
+            code = c["code"]
+            rows = repo.series_by_code(profile_id, code)
+            if rows:
+                latest_obs[code] = rows[-1]["value"]
+
+        prediction = compute_risk_prediction(profile or {}, latest_obs, [])
+        timeline = compute_risk_timeline(profile_id)
+
         repo.finish_assessment(a["id"], "completed",
-                               {"counts": counts, "top_titles": top_titles})
+                               {"counts": counts, "top_titles": top_titles,
+                                "prediction": prediction, "risk_timeline": timeline})
     except Exception as exc:
         repo.finish_assessment(a["id"], "failed", error=str(exc))
         raise
     out = repo.get_assessment(a["id"])
     out["issues"] = repo.list_issues(a["id"])
+    out["prediction"] = out.get("summary", {}).get("prediction") or prediction
+    out["risk_timeline"] = out.get("summary", {}).get("risk_timeline") or timeline
     out["cached"] = False
     return out
 
@@ -233,10 +282,17 @@ def _score_group(grp, insights, grp_findings, registry):
             critical = True
             why.append(f"{name}达到危急值水平，请优先就医复核")
     if grp_findings:
-        add = min(4, 2 * len(grp_findings))
-        score += add
-        why.append("检查报告存在相关所见："
-                   + "；".join(f["description"][:24] for f in grp_findings[:2]))
+        if not insights:
+            # 纯影像/检查报告（无生化数值）：按阳性所见条数分级
+            add = min(9.0, 3.0 * len(grp_findings))
+            score += add
+            why.append("影像/检查诊断提示："
+                       + "；".join(f["description"][:60] for f in grp_findings[:3]))
+        else:
+            add = min(4.0, 2.0 * len(grp_findings))
+            score += add
+            why.append("检查报告存在相关所见："
+                       + "；".join(f["description"][:30] for f in grp_findings[:2]))
     return score, why, critical
 
 
@@ -265,7 +321,7 @@ def _compose_issue(grp, insights, grp_findings, score, level, why_parts,
                              "value": p.value, "unit": p.unit or "",
                              "date": p.date, "grade": p.grade,
                              "report_id": p.report_id, "source": src})
-    for f in grp_findings[:3]:
+    for f in grp_findings[:4]:
         evidence.append({"code": "finding", "name": f["organ"],
                          "value": None, "unit": "", "date": f["observed_at"],
                          "grade": 0, "report_id": f.get("report_id"),
@@ -281,7 +337,7 @@ def _compose_issue(grp, insights, grp_findings, score, level, why_parts,
         if g != 0:
             found.append(f"{name} {ins.latest.value:g}{ins.latest.unit or ''}"
                          f"（{GRADE_LABELS.get(g, '')}，{ins.latest.date}）")
-    for f in grp_findings[:2]:
+    for f in grp_findings[:3]:
         found.append(f"{f['organ']}：{f['description']}（{f['observed_at']}）")
     if not found:
         found.append("该组指标当前均在参考范围内")
@@ -299,12 +355,15 @@ def _compose_issue(grp, insights, grp_findings, score, level, why_parts,
                                       **ins.compare.to_dict(),
                                       "unit": ins.latest.unit or ""})
     if not history:
-        history.append("历史记录不足两次，暂无法进行纵向比较；"
-                       "补充既往报告后趋势会自动更新")
+        if grp_findings and not insights:
+            history.append("影像检查侧重当前组织形态学评价；建议按医嘱周期复查对比积液及退变进展")
+        else:
+            history.append("历史记录不足两次，暂无法进行纵向比较；"
+                           "补充既往报告后趋势会自动更新")
 
     gaps = _gaps_of(grp, insights)
     top_abnormal = [c for c, i in insights.items() if i.latest.grade != 0]
-    summary = _summary_line(grp, insights, registry)
+    summary = _summary_line(grp, insights, grp_findings, registry)
 
     return {
         "rank": 999, "title": grp["title"], "level": level,
@@ -325,22 +384,32 @@ def _compose_issue(grp, insights, grp_findings, score, level, why_parts,
     }
 
 
-def _summary_line(grp, insights, registry) -> str:
+def _summary_line(grp, insights, grp_findings, registry) -> str:
     abnormal = [(c, i) for c, i in insights.items() if i.latest.grade != 0]
-    if not abnormal:
-        return "当前记录均在参考范围内"
-    parts = []
-    for code, ins in abnormal[:2]:
-        meta = registry.get(code)
-        name = meta.name_cn if meta else code
-        tag = f"，{ins.persistent_direction}" if ins.persistent_direction else ""
-        parts.append(f"{name} {ins.latest.value:g}{ins.latest.unit or ''}{tag}")
-    more = f" 等 {len(abnormal)} 项" if len(abnormal) > 2 else ""
-    return "；".join(parts) + more
+    if abnormal:
+        parts = []
+        for code, ins in abnormal[:2]:
+            meta = registry.get(code)
+            name = meta.name_cn if meta else code
+            tag = f"，{ins.persistent_direction}" if ins.persistent_direction else ""
+            parts.append(f"{name} {ins.latest.value:g}{ins.latest.unit or ''}{tag}")
+        more = f" 等 {len(abnormal)} 项" if len(abnormal) > 2 else ""
+        return "；".join(parts) + more
+    if grp_findings:
+        descs = [f["description"] for f in grp_findings if f.get("description")]
+        if descs:
+            short = "；".join(d[:35] for d in descs[:2])
+            more = f" 等 {len(descs)} 项所见" if len(descs) > 2 else ""
+            return f"影像所见：{short}{more}"
+    return "当前记录均在参考范围内"
 
 
 def _gaps_of(grp, insights) -> List[str]:
     gaps = []
+    if not grp.get("codes"):
+        # 纯影像组
+        gaps.append("建议每 3–6 个月复查磁共振(MRI)或超声以评估软骨、半月板与积液吸收情况；日常注意观察关节有无晨僵或绞锁")
+        return gaps
     single = [c for c, i in insights.items() if len(i.points) < 2]
     if single:
         gaps.append("以下指标只有单次记录，补充历史报告可判断是偶发还是持续："

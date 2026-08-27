@@ -164,8 +164,17 @@ function kindCN(k) {
            plan: '食补方案', tea: '茶饮方案' }[k] || k
 }
 function typeCN(t) {
-  return { lab_report: '检验报告', ultrasound_report: '超声检查',
-           checkup: '体检报告', other: '健康资料' }[t] || '健康资料'
+  return {
+    lab_report: '检验报告',
+    ultrasound_report: '超声检查',
+    mri_report: '磁共振(MRI)',
+    ct_report: 'CT检查',
+    imaging_report: '影像检查',
+    xray_report: 'X光/DR',
+    clinical_note: '病历小结',
+    checkup: '体检报告',
+    other: '健康资料',
+  }[t] || '健康资料'
 }
 function stCN(s) {
   return { ready: '已识别', needs_confirmation: '待确认', failed: '失败',

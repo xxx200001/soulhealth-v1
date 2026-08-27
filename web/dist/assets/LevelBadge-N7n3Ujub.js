@@ -1,0 +1,1 @@
+import{o as s,c as o,t as c,n,l as r}from"./index-BoYiHoc4.js";const v={__name:"LevelBadge",props:{level:{type:String,default:"stable"}},setup(e){const l=e,t={stable:"相对稳定",mild:"轻度关注",watch:"需要留意",priority:"重点关注"},a=r(()=>t[l.level]||l.level);return(p,i)=>(s(),o("span",{class:n(["lv",`lv-${e.level}`])},c(a.value),3))}};export{v as _};

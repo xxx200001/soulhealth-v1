@@ -86,7 +86,7 @@ AGENT_MAX_FOLLOWUPS: int = int(os.getenv("SOULHEALTH_AGENT_MAX_FOLLOWUPS", "2"))
 
 # ---------------------------------------------------------------- 鉴权
 SECRET_KEY: str = os.getenv("SOULHEALTH_SECRET", "dev-secret-change-me").strip()
-TOKEN_TTL_HOURS: int = int(os.getenv("SOULHEALTH_TOKEN_TTL_HOURS", "72"))
+TOKEN_TTL_HOURS: int = int(os.getenv("SOULHEALTH_TOKEN_TTL_HOURS", "8760"))
 
 # ---------------------------------------------------------------- 展示
 APP_NAME = "SOULHEALTH"

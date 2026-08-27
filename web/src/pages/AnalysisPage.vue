@@ -40,6 +40,105 @@
         </div>
       </section>
 
+      <!-- DRP 慢病进展风险概率预测卡片（1Y/3Y/5Y 时程切换） -->
+      <section v-if="pred" class="card fade-in pred-card">
+        <div class="row-between" style="align-items: center">
+          <div class="card-title">
+            <span class="dot" :style="{ background: currentHorizon?.tier_color || 'var(--gold-500)' }"></span>
+            未来慢病进展风险概率预测
+          </div>
+          <span class="badge" :style="{ background: currentHorizon?.tier_color + '22', color: currentHorizon?.tier_color, borderColor: currentHorizon?.tier_color }">
+            {{ currentHorizon?.tier_cn }}区间
+          </span>
+        </div>
+
+        <p class="tiny muted" style="margin: 4px 0 10px">
+          {{ pred.target }} · {{ pred.evidence }}
+        </p>
+
+        <!-- 时程切换 Tabs (1Y / 3Y / 5Y) -->
+        <div class="horizon-tabs">
+          <button v-for="h in pred.horizons" :key="h.horizon"
+                  class="horizon-tab"
+                  :class="{ active: selectedHorizon === h.horizon }"
+                  @click="selectedHorizon = h.horizon">
+            <span class="h-label">{{ h.horizon_label }}</span>
+            <b class="h-prob" :style="{ color: selectedHorizon === h.horizon ? h.tier_color : 'inherit' }">
+              {{ h.percentage }}
+            </b>
+          </button>
+        </div>
+
+        <!-- 当前选定时程的详细卡片 -->
+        <div class="horizon-detail" v-if="currentHorizon">
+          <div class="row-between" style="align-items: center; margin-bottom: 8px">
+            <div class="row" style="align-items: baseline; gap: 6px">
+              <span class="pred-big-num" :style="{ color: currentHorizon.tier_color }">{{ currentHorizon.percentage }}</span>
+              <span class="tiny muted">校准进展概率</span>
+            </div>
+            <div class="pred-advice">
+              <span class="tiny">建议随访：</span>
+              <b>{{ currentHorizon.follow_up_advice }}</b>
+            </div>
+          </div>
+          <p class="pred-summary">{{ currentHorizon.summary }}</p>
+        </div>
+
+        <!-- SHAP 风险归因分析（推高 vs 降低因子） -->
+        <div v-if="pred.top_drivers?.length" class="driver-section">
+          <div class="driver-title">
+            <span class="dot-sm"></span>
+            <b>Top 风险归因分析（哪些因素在推高/降低风险）</b>
+          </div>
+          <div class="driver-list">
+            <div v-for="d in pred.top_drivers" :key="d.code" class="driver-item"
+                 :class="d.direction === 'increase' ? 'dr-up' : 'dr-down'">
+              <div class="row-between" style="align-items: center">
+                <div class="row" style="gap: 6px; align-items: center">
+                  <span class="dr-tag" :class="d.direction === 'increase' ? 'tag-up' : 'tag-down'">
+                    {{ d.direction_cn }}
+                  </span>
+                  <b class="dr-name">{{ d.name }}</b>
+                  <span v-if="d.current_value !== null" class="tiny dr-val">
+                    ({{ d.current_value }}{{ d.unit }})
+                  </span>
+                </div>
+                <div class="dr-bar-wrap">
+                  <div class="dr-bar" :style="{ width: Math.min(100, d.impact * 80) + '%', background: d.direction === 'increase' ? 'var(--danger)' : 'var(--ok)' }"></div>
+                </div>
+              </div>
+              <p class="dr-reason">{{ d.reason }}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 临床衍生复合评分卡片（AST/ALT, FIB-4, eGFR, TyG...） -->
+      <section v-if="pred?.ratios?.length" class="card fade-in ratios-card">
+        <button class="row-between fold" @click="ratiosOpen = !ratiosOpen">
+          <span class="card-title">
+            <span class="dot" style="background: var(--brand-600)"></span>
+            临床衍生复合指数（{{ pred.ratios.length }} 项）
+          </span>
+          <span class="tiny">{{ ratiosOpen ? '收起 ▴' : '展开 ▾' }}</span>
+        </button>
+        <div v-if="ratiosOpen" class="ratios-grid" style="margin-top: 10px">
+          <div v-for="rt in pred.ratios" :key="rt.key" class="ratio-item">
+            <div class="row-between" style="align-items: center">
+              <b class="ratio-name">{{ rt.name }}</b>
+              <div class="row" style="gap: 6px; align-items: center">
+                <b class="ratio-val num">{{ rt.value }} {{ rt.unit }}</b>
+                <span class="ratio-badge" :class="`rb-${rt.status}`">
+                  {{ rt.status === 'danger' ? '偏高' : (rt.status === 'warn' ? '留意' : '良好') }}
+                </span>
+              </div>
+            </div>
+            <p class="ratio-interp">{{ rt.interpretation }}</p>
+            <span class="tiny ratio-ref">参考范围：{{ rt.reference }} · {{ rt.literature }}</span>
+          </div>
+        </div>
+      </section>
+
       <!-- TOP 1–3（AC-07：首屏明确第一优先与依据） -->
       <section v-for="it in tops" :key="it.id" class="card top card-clickable fade-in"
                :class="`b-${it.level}`" @click="$router.push(`/issue/${it.id}`)">
@@ -139,7 +238,7 @@
         查看健康趋势与本次 VS 上次 ›
       </button>
       <p class="tiny" style="text-align:center">
-        风险以关注等级与依据表达，不提供未经验证的患病概率；如指标显著异常请及时就医
+        风险预测基于多变量统计与临床模型，不替代临床诊断；如指标显著异常请及时就医
       </p>
     </template>
   </div>
@@ -160,6 +259,14 @@ const assessment = ref(null)
 const scope = ref(null)
 const scopeOpen = ref(false)
 const stableOpen = ref(false)
+const ratiosOpen = ref(true)
+const selectedHorizon = ref('3y')
+
+const pred = computed(() => assessment.value?.prediction || null)
+const currentHorizon = computed(() => {
+  if (!pred.value?.horizons) return null
+  return pred.value.horizons.find((h) => h.horizon === selectedHorizon.value) || pred.value.horizons[1]
+})
 
 const tops = computed(() =>
   (assessment.value?.issues || []).filter((i) => i.rank <= 3))
@@ -167,8 +274,17 @@ const stables = computed(() =>
   (assessment.value?.issues || []).filter((i) => i.rank > 3))
 
 function typeCN(t) {
-  return { lab_report: '检验报告', ultrasound_report: '超声检查',
-           checkup: '体检报告', other: '健康资料' }[t] || '健康资料'
+  return {
+    lab_report: '检验报告',
+    ultrasound_report: '超声检查',
+    mri_report: '磁共振(MRI)',
+    ct_report: 'CT检查',
+    imaging_report: '影像检查',
+    xray_report: 'X光/DR',
+    clinical_note: '病历小结',
+    checkup: '体检报告',
+    other: '健康资料',
+  }[t] || '健康资料'
 }
 function keyEvidence(it) {
   const seen = new Set()
@@ -213,6 +329,201 @@ onMounted(async () => {
   padding: 8px 12px; font-size: 13px; color: var(--ink-700); cursor: pointer;
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .scope-line .tiny { margin-left: auto; }
+
+/* DRP 预测卡片样式 */
+.pred-card {
+  border: 1.5px solid var(--gold-400);
+  background: linear-gradient(180deg, rgba(254, 252, 245, 0.9) 0%, #ffffff 100%);
+  position: relative;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+}
+.horizon-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.horizon-tab {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.horizon-tab:hover {
+  border-color: var(--gold-500);
+}
+.horizon-tab.active {
+  background: var(--gold-050);
+  border-color: var(--gold-600);
+  box-shadow: 0 2px 6px rgba(184, 145, 47, 0.15);
+}
+.h-label {
+  font-size: 12px;
+  color: var(--ink-600);
+}
+.h-prob {
+  font-size: 16px;
+  font-family: var(--font-mono);
+}
+.horizon-detail {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+.pred-big-num {
+  font-size: 32px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+.pred-advice {
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--brand-900);
+}
+.pred-advice b {
+  color: var(--danger);
+}
+.pred-summary {
+  font-size: 13px;
+  color: var(--ink-700);
+  line-height: 1.5;
+}
+
+/* SHAP 归因驱动 */
+.driver-section {
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 12px;
+}
+.driver-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-800);
+  margin-bottom: 8px;
+}
+.dot-sm {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold-600);
+}
+.driver-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.driver-item {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.dr-tag {
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+.tag-up {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+}
+.tag-down {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--ok);
+}
+.dr-name {
+  font-size: 13px;
+}
+.dr-val {
+  color: var(--ink-500);
+}
+.dr-bar-wrap {
+  width: 70px;
+  height: 6px;
+  background: var(--surface-sunk);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.dr-bar {
+  height: 100%;
+  border-radius: 3px;
+}
+.dr-reason {
+  font-size: 12px;
+  color: var(--ink-600);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* 临床衍生评分卡片 */
+.ratios-card {
+  border-color: rgba(45, 95, 75, 0.2);
+}
+.ratios-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ratio-item {
+  background: var(--surface-sunk);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+}
+.ratio-name {
+  font-size: 13.5px;
+  color: var(--ink-900);
+}
+.ratio-val {
+  font-size: 14px;
+  color: var(--brand-900);
+}
+.ratio-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.rb-ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--ok);
+}
+.rb-warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warn);
+}
+.rb-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+.ratio-interp {
+  font-size: 12px;
+  color: var(--ink-700);
+  margin: 4px 0 2px;
+  line-height: 1.4;
+}
+.ratio-ref {
+  color: var(--ink-500);
+}
 
 .cta { border-color: var(--gold-500); }
 

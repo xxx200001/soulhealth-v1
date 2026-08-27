@@ -1,0 +1,2482 @@
+diff --git a/app/db.py b/app/db.py
+index 466745a..76129c1 100644
+--- a/app/db.py
++++ b/app/db.py
+@@ -252,6 +252,71 @@ class AppDB:
+         ).fetchall()
+         return [dict(r) for r in rows]
+ 
++    # ------------------------------------------------------------------ 报告管理（改版·改动 1）
++    # 需求：用户连续上传 7-8 份报告后，必须能看到"每一份都独立入库、没有覆盖"，
++    # 并且可以逐份 查看原文 / 修改检查日期 / 删除 / 重新识别。
++    # 注意：本表【有意】不存原始图片 —— 化验单图片上通常印有姓名等明文 PII，
++    # 与规范 1.2 冲突；可回看的是已过 scan_pii 的 OCR/粘贴文本（raw_text）。
++    def list_reports(self, patient_id: str) -> list[dict]:
++        """该患者全部报告（按真实检查日期 measured_at 升序），附每份实际入库指标数。"""
++        rows = self.conn.execute(
++            """SELECT r.id, r.measured_at, r.created_at,
++                      r.n_ingested, r.n_review, r.n_unmatched,
++                      (SELECT COUNT(*) FROM lab_records l WHERE l.report_id = r.id) AS n_stored
++               FROM reports r WHERE r.patient_id=?
++               ORDER BY r.measured_at, r.id""",
++            (patient_id,),
++        ).fetchall()
++        return [dict(r) for r in rows]
++
++    def get_report(self, report_id: int) -> dict | None:
++        row = self.conn.execute(
++            "SELECT * FROM reports WHERE id=?", (report_id,)
++        ).fetchone()
++        return dict(row) if row else None
++
++    def update_report_date(self, report_id: int, measured_at: str) -> None:
++        """
++        修改一份报告的真实检查日期。必须【同事务】联动它名下所有 lab_records 的
++        measured_at —— 趋势/时间轴/纵向特征全部按 lab_records.measured_at 计算，
++        只改 reports 表会造成两处时间对不上（正是本次核查项 3 要杜绝的问题）。
++        """
++        self.conn.execute(
++            "UPDATE reports SET measured_at=? WHERE id=?", (measured_at, report_id)
++        )
++        self.conn.execute(
++            "UPDATE lab_records SET measured_at=? WHERE report_id=?",
++            (measured_at, report_id),
++        )
++        self.conn.commit()
++
++    def delete_report(self, report_id: int) -> int:
++        """删除报告及其名下全部指标记录。返回删除的指标记录数。"""
++        cur = self.conn.execute(
++            "DELETE FROM lab_records WHERE report_id=?", (report_id,)
++        )
++        n = cur.rowcount
++        self.conn.execute("DELETE FROM reports WHERE id=?", (report_id,))
++        self.conn.commit()
++        return int(n)
++
++    def clear_report_records(self, report_id: int) -> int:
++        """清空一份报告名下的指标记录（重新识别前调用），报告行保留。"""
++        cur = self.conn.execute(
++            "DELETE FROM lab_records WHERE report_id=?", (report_id,)
++        )
++        self.conn.commit()
++        return int(cur.rowcount)
++
++    def update_report_counts(
++        self, report_id: int, n_ingested: int, n_review: int, n_unmatched: int
++    ) -> None:
++        self.conn.execute(
++            "UPDATE reports SET n_ingested=?, n_review=?, n_unmatched=? WHERE id=?",
++            (n_ingested, n_review, n_unmatched, report_id),
++        )
++        self.conn.commit()
++
+     # ------------------------------------------------------------------ 用药（规范 2.4）
+     def add_medication(
+         self, patient_id: str, medication_name: str,
+diff --git a/app/server.py b/app/server.py
+index c312486..cd7ccaf 100644
+--- a/app/server.py
++++ b/app/server.py
+@@ -154,8 +154,16 @@ class ReportIn(BaseModel):
+     measured_at: str
+ 
+ 
++class ReportDateIn(BaseModel):
++    measured_at: str
++
++
+ class PredictIn(BaseModel):
+     patient_id: str
++    # 本次最关注的问题（改版·改动 2）。只影响结果页的【回答顺序】——
++    # 后台永远全身扫描，concern 不裁剪任何分析。
++    # 可选值: liver / cardio / glucose / renal / other / all（None 视同 all）
++    concern: str | None = None
+     # 采血登记（规范 2.4 生理状态）。描述的是【本次预测时点】的状态，
+     # 属于每次就诊的登记项而非患者档案 —— 妊娠/空腹会变，所以随请求传，
+     # 不落 patients 表。None = 未登记（特征层不产出该项，与"否"严格区分）。
+@@ -164,6 +172,35 @@ class PredictIn(BaseModel):
+     pregnancy: bool | None = None
+ 
+ 
++# ---------------------------------------------------------------------------
++# 展示层分组与关注点映射（改版·改动 2/3）
++# 仅用于时间轴统计与"风险总览"的口语化归类；临床科室推荐仍由
++# ReferralEngine 的规则表负责，两者读者不同、允许粒度不同。
++# ---------------------------------------------------------------------------
++_TIMELINE_GROUPS: dict[str, tuple[str, ...]] = {
++    "血脂": ("TG", "TC", "LDLC", "HDLC"),
++    "肝功能": ("ALT", "AST", "GGT", "TBIL", "ALB"),
++    "肾功能": ("CREA", "UREA", "UA", "UACR"),
++    "血糖": ("GLU", "HBA1C", "INS"),
++    "血压": ("SBP", "DBP"),
++    "血常规": ("PLT", "HGB", "WBC"),
++    "炎症指标": ("CRP",),
++    "体格": ("BMI",),
++}
++
++#: concern 值 -> ReferralEngine 的指标组名（items[].group）
++_CONCERN_TO_GROUPS: dict[str, tuple[str, ...]] = {
++    "liver": ("肝功能",),
++    "cardio": ("血脂", "血压"),
++    "glucose": ("血糖代谢",),
++    "renal": ("肾功能", "电解质"),
++}
++_CONCERN_LABEL: dict[str, str] = {
++    "liver": "肝脏", "cardio": "心血管", "glucose": "血糖代谢",
++    "renal": "肾脏", "other": "其他", "all": "全面分析",
++}
++
++
+ class FeedbackIn(BaseModel):
+     trace_id: str
+     event_occurred: bool
+@@ -202,6 +239,11 @@ class ServerState:
+     services: dict[tuple[str, str], RiskPredictionService] = field(default_factory=dict)
+     tier_schemes: dict[str, RiskTierScheme] = field(default_factory=dict)
+     monitors: dict[str, DriftMonitor] = field(default_factory=dict)
++    # 模型卡（改版·核查项 4）：预测终点与"是否演示模型"必须能被展示层读到。
++    model_card: dict = field(default_factory=dict)
++    # 回溯风险时间轴缓存：key=(pid, n_records, last_measured_at)。
++    # 数据一变 key 就变，天然失效；单机 demo 规模无需 LRU。
++    risk_timeline_cache: dict = field(default_factory=dict)
+ 
+     # ------------------------------------------------------------------
+     def ensure_version_loaded(self, version: str) -> None:
+@@ -299,6 +341,41 @@ def build_state(app_data: str | Path) -> ServerState:
+     canary = registry.get_canary()
+     if canary is not None:
+         state.ensure_version_loaded(canary.version)
++
++    # ------------------------------------------------------------------
++    # 模型卡（核查项 4：1Y/3Y/5Y 到底预测什么，必须能说清楚）。
++    # 概率本身是真实 LightGBM+等渗校准输出（非硬编码），但当前 ACTIVE 若是
++    # 开发自举版本，训练数据为【合成纵向病历】、结局为合成综合慢病事件 ——
++    # 界面必须明确标注"演示模型/非临床验证"，不允许包装成疾病发生概率。
++    development_only = False
++    note = active.notes or ""
++    meta_path = app_data / "bootstrap_meta.json"
++    if meta_path.exists():
++        try:
++            import json
++            bmeta = json.loads(meta_path.read_text(encoding="utf-8"))
++            if bmeta.get("version") == active.version:
++                development_only = bool(bmeta.get("development_only", False))
++                note = bmeta.get("note", note)
++        except Exception:  # 模型卡是展示信息，读取失败不阻断服务
++            logger.warning("bootstrap_meta.json 读取失败，模型卡按注册表 notes 兜底")
++    if not development_only and "合成" in note:
++        development_only = True  # 注册表 notes 里钉着的那句话就是判据
++    state.model_card = {
++        "endpoint_label": "综合心血管代谢及慢病相关风险进展",
++        "endpoint_detail": (
++            "各时程概率 = 模型估计的「未来 N 年内发生综合慢病事件」的校准概率。"
++            "由该患者全部历史检查数据经真实特征管线（含时序趋势特征）计算得出。"
++        ),
++        "development_only": development_only,
++        "development_note": (
++            "当前为演示模型：训练数据为合成纵向病历，概率为统计演示值，"
++            "未经过真实临床队列验证，不代表真实疾病发生概率。"
++            if development_only else ""
++        ),
++        "model_version": active.version,
++        "attribution_method": "TreeSHAP（按指标聚合，仅输出排序与方向）",
++    }
+     return state
+ 
+ 
+@@ -384,6 +461,8 @@ def build_server(app_data: str | Path):
+                 "history": HISTORY_FIELDS,
+                 "family_history": FAMILY_HISTORY_FIELDS,
+             },
++            # 模型卡（核查项 4）：预测终点 + 演示模型标识，展示层必须原样呈现
++            "model_card": st.model_card,
+         }
+ 
+     # ---------------- 患者 ----------------
+@@ -521,6 +600,7 @@ def build_server(app_data: str | Path):
+                 0, preport.n_review, preport.n_unmatched,
+             )
+ 
++        st.risk_timeline_cache.clear()
+         return {
+             "report_id": report_id,
+             "stored": stored,
+@@ -529,6 +609,267 @@ def build_server(app_data: str | Path):
+             "rows": [r.to_log_dict() for r in rows],
+         }
+ 
++    # ---------------- 报告管理（改版·改动 1：8 份报告逐份可见、可管理） ----------------
++    def _report_or_404(report_id: int) -> dict:
++        rep = st.db.get_report(report_id)
++        if rep is None:
++            raise HTTPException(404, f"报告 {report_id} 不存在")
++        return rep
++
++    @app.get("/api/patients/{pid}/reports")
++    def list_reports(pid: str):
++        """
++        该患者的历史检查资料清单 + 累计状态。
++        summary 用于渲染「已上传 N 份报告｜YYYY.MM—YYYY.MM｜识别 X 条指标」。
++        列表按【真实检查日期】排序（核查项 3），不按上传时间。
++        """
++        _patient_or_404(pid)
++        reports = st.db.list_reports(pid)
++        dates = [str(r["measured_at"])[:10] for r in reports if r.get("measured_at")]
++        return {
++            "reports": reports,
++            "summary": {
++                "n_reports": len(reports),
++                "n_stored_total": int(sum(r["n_stored"] for r in reports)),
++                "first_date": min(dates) if dates else None,
++                "last_date": max(dates) if dates else None,
++            },
++        }
++
++    @app.get("/api/reports/{report_id}")
++    def get_report(report_id: int):
++        """查看报告原文（OCR/粘贴文本）。原始图片有意不落库：图片含姓名等明文
++        PII，与规范 1.2 冲突；可回看的是已过 scan_pii 的识别文本。"""
++        rep = _report_or_404(report_id)
++        return {
++            "id": rep["id"], "patient_id": rep["patient_id"],
++            "measured_at": rep["measured_at"], "created_at": rep["created_at"],
++            "raw_text": rep["raw_text"],
++            "n_ingested": rep["n_ingested"], "n_review": rep["n_review"],
++            "n_unmatched": rep["n_unmatched"],
++        }
++
++    @app.patch("/api/reports/{report_id}")
++    def update_report_date(report_id: int, body: ReportDateIn):
++        """修改检查日期。DB 层保证报告与其名下全部指标记录的 measured_at 联动。"""
++        _report_or_404(report_id)
++        try:
++            ts = pd.Timestamp(body.measured_at)
++        except Exception as e:
++            raise HTTPException(422, f"measured_at 无法解析: {e}") from e
++        if ts > pd.Timestamp(datetime.now(timezone.utc).date()) + pd.Timedelta(days=1):
++            raise HTTPException(422, "检查日期不能晚于今天")
++        st.db.update_report_date(report_id, str(ts))
++        st.risk_timeline_cache.clear()
++        return {"id": report_id, "measured_at": str(ts)}
++
++    @app.delete("/api/reports/{report_id}")
++    def delete_report(report_id: int):
++        _report_or_404(report_id)
++        n = st.db.delete_report(report_id)
++        st.risk_timeline_cache.clear()
++        return {"deleted": report_id, "records_removed": n}
++
++    @app.post("/api/reports/{report_id}/reparse")
++    def reparse_report(report_id: int):
++        """重新识别：对已入库的原文重新走解析+清洗管线（词典/解析器升级后使用），
++        替换该报告名下的指标记录；检查日期保持不变。"""
++        rep = _report_or_404(report_id)
++        patient = _patient_or_404(rep["patient_id"])
++        measured_at = pd.Timestamp(rep["measured_at"])
++        frame, preport, rows = parse_lab_text(
++            rep["raw_text"], st.ref, patient_id=rep["patient_id"], measured_at=measured_at
++        )
++        st.db.clear_report_records(report_id)
++        stored = 0
++        if not frame.empty:
++            cleaned, _ = st.cleaner.clean(frame, demographics=_demo_frame(patient))
++            stored = st.db.insert_lab_records([
++                {
++                    "patient_id": rep["patient_id"],
++                    "indicator_code": r[COL_INDICATOR],
++                    "value": float(r[COL_VALUE]),
++                    "unit": str(r[COL_UNIT]),
++                    "measured_at": str(r[COL_MEASURED_AT]),
++                    "status": int(r[COL_STATUS]),
++                    "report_id": report_id,
++                }
++                for _, r in cleaned.iterrows()
++            ])
++        st.db.update_report_counts(
++            report_id, preport.n_ingested, preport.n_review, preport.n_unmatched
++        )
++        st.risk_timeline_cache.clear()
++        return {
++            "report_id": report_id, "stored": stored,
++            "parse": preport.to_log_dict(),
++            "rows": [r.to_log_dict() for r in rows],
++        }
++
++    # ---------------- 健康时间轴（改版·改动 1：上传完先"数据确认"再预测） ----------------
++    @app.get("/api/patients/{pid}/timeline")
++    def patient_timeline(pid: str):
++        """
++        「已建立个人健康时间轴」的数据确认视图：
++        数据跨度 / 报告数 / 有效记录数 / 可连续比较指标数 / 各系统时间点覆盖。
++        全部按【真实检查日期】统计（核查项 3）。
++        """
++        _patient_or_404(pid)
++        reports = st.db.list_reports(pid)
++        rows = st.db.records_for_patient(pid)
++        dates = sorted({str(r["measured_at"])[:10] for r in rows})
++        by_code_dates: dict[str, set] = {}
++        for r in rows:
++            by_code_dates.setdefault(r["indicator_code"], set()).add(
++                str(r["measured_at"])[:10]
++            )
++        comparable = sorted(
++            c for c, ds in by_code_dates.items() if len(ds) >= 2
++        )
++        groups = []
++        for gname, codes in _TIMELINE_GROUPS.items():
++            gdates: set = set()
++            for c in codes:
++                gdates |= by_code_dates.get(c, set())
++            if gdates:
++                groups.append({
++                    "group": gname,
++                    "n_timepoints": len(gdates),
++                    "codes_present": [c for c in codes if c in by_code_dates],
++                })
++        groups.sort(key=lambda g: -g["n_timepoints"])
++
++        span_days = 0
++        span_label = "—"
++        if len(dates) >= 2:
++            span_days = int(
++                (pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days
++            )
++            yy, rem = divmod(span_days, 365)
++            mm = round(rem / 30.44)
++            if mm == 12:
++                yy, mm = yy + 1, 0
++            span_label = (f"{yy}年" if yy else "") + (f"{mm}个月" if mm else "")
++            span_label = span_label or "不足1个月"
++
++        return {
++            "n_reports": len(reports),
++            "n_records": len(rows),
++            "n_dates": len(dates),
++            "first_date": dates[0] if dates else None,
++            "last_date": dates[-1] if dates else None,
++            "span_days": span_days,
++            "span_label": span_label,
++            "n_comparable_indicators": len(comparable),
++            "comparable_indicators": comparable,
++            "groups": groups,
++            # 纵向趋势分析的门槛：至少两个真实检查时间点
++            "longitudinal_ready": len(dates) >= 2,
++        }
++
++    # ---------------- 回溯风险时间轴（改版·改动 5/6：X 轴 = 真实检查日期） ----------------
++    @app.get("/api/patients/{pid}/risk-timeline")
++    def patient_risk_timeline(pid: str):
++        """
++        按【真实检查日期】回溯计算的历史风险轨迹：对每个检查时间点 t，仅用
++        measured_at <= t 的记录、以 t 为索引日重跑真实特征管线并推理。
++
++        与审计走势（trend.risk_trajectory_from_audit，按预测发生时间）的分工：
++          · 审计走势回答"模型当时怎么判断"，用于复盘，保留在管理/随访链路；
++          · 本视图回答"随着一次次体检，风险如何演变"，X 轴是检查日期 ——
++            正是核查项 3 与改动 5 要求的用户侧曲线。
++        本视图是派生分析，不写审计、不产生 trace，因此直接走 bank.predict_risk
++        而不是 RiskPredictionService（后者的审计落盘是不可分割路径）。
++        """
++        patient = _patient_or_404(pid)
++        recs = _records_frame(pid)
++        if recs.empty:
++            return {"points": [], "basis": "retrospective_current_model",
++                    "model_version": None, "note": "暂无化验记录"}
++
++        cache_key = (pid, int(len(recs)), str(recs[COL_MEASURED_AT].max()))
++        cached = st.risk_timeline_cache.get(cache_key)
++        if cached is not None:
++            return cached
++
++        try:
++            decision = st.router.decide(pid)
++            version = decision.version
++        except RegistryError:
++            active = st.registry.get_active()
++            if active is None:
++                raise HTTPException(503, "注册表中没有 ACTIVE 版本")
++            version = active.version
++        st.ensure_version_loaded(version)
++        bank = st.banks[version]
++        manifest = bank.models[st.horizons[0]].manifest
++
++        meds = st.db.medications_for_patient(pid)
++        medications = (
++            pd.DataFrame([{
++                COL_PATIENT_ID: pid,
++                "medication_name": m["medication_name"],
++                "start_date": m["start_date"],
++                "end_date": m["end_date"],
++            } for m in meds])
++            if meds else None
++        )
++
++        exam_dates = sorted(recs[COL_MEASURED_AT].dt.normalize().unique())
++        # 单机 demo 保护：时间点极多时等距抽稀，但首末两点必须保留
++        max_points = 16
++        if len(exam_dates) > max_points:
++            idx = np.linspace(0, len(exam_dates) - 1, max_points).round().astype(int)
++            exam_dates = [exam_dates[i] for i in sorted(set(idx.tolist()))]
++
++        points = []
++        for d in exam_dates:
++            d = pd.Timestamp(d)
++            sub = recs[recs[COL_MEASURED_AT] <= d + pd.Timedelta(hours=23, minutes=59)]
++            if sub.empty:
++                continue
++            cohort_row = {
++                COL_PATIENT_ID: patient["patient_id"],
++                COL_INDEX_DATE: d,
++                COL_SEX: patient["sex"],
++                COL_BIRTH_DATE: pd.Timestamp(patient["birth_date"]),
++            }
++            for col in PROFILE_COLUMNS:
++                cohort_row[col] = patient.get(col)
++            cohort = pd.DataFrame([cohort_row])
++            try:
++                X = st.pipeline.transform(
++                    cohort, sub, medications=medications, manifest=manifest
++                )
++            except Exception as e:  # 单点失败不拖垮整条时间轴
++                logger.warning("[risk-timeline] %s@%s 特征失败: %s", pid, d.date(), e)
++                continue
++            horizons_out = {}
++            for h in st.horizons:
++                p = float(bank.models[h].predict_risk(X)[0])
++                horizons_out[h] = {
++                    "probability": p,
++                    "risk_tier": st.tier_schemes[h].assign(p),
++                }
++            points.append({
++                "at": str(d.date()),
++                "n_records_used": int(len(sub)),
++                "horizons": horizons_out,
++            })
++
++        payload = {
++            "basis": "retrospective_current_model",
++            "model_version": version,
++            "points": points,
++            "note": (
++                "历史轨迹为按各检查日期、仅用该日期之前数据、以当前模型回溯计算；"
++                "属派生分析视图，不写入审计与随访链路。"
++                "「模型当时的判断」请看管理台的审计走势。"
++            ),
++        }
++        st.risk_timeline_cache[cache_key] = payload
++        return payload
++
+     # ---------------- 预测（真实特征管线 -> 灰度路由 -> 多时程服务） ----------------
+     @app.post("/api/predict")
+     def predict(body: PredictIn):
+@@ -618,12 +959,116 @@ def build_server(app_data: str | Path):
+             recs, demographics=_demo_frame(patient), risk_tier=tier_for_referral
+         )
+ 
++        # -------- 风险总览（改动 3）：先给优先级排序，再平铺科室 --------
++        # 排序沿用 ReferralEngine 的临床优先级（priority + 最大分级），
++        # 每一项都补上"为什么排这里"：涉及指标、当前分级、较上次的真实变化方向。
++        comparisons = {
++            c.code: c for c in st.trend.compare_latest(
++                recs, demographics=_demo_frame(patient)
++            )
++        }
++        rank_labels = ["首要关注", "第二关注", "第三关注"]
++        overview_items = []
++        for i, it in enumerate(advice.items):
++            inds = []
++            for f in it.findings:
++                comp = comparisons.get(f.code)
++                trend_txt = None
++                if comp is not None:
++                    if comp.is_real_change:
++                        trend_txt = comp.direction + ("·较上次加重" if comp.worsened else "")
++                    else:
++                        trend_txt = "较上次平稳"
++                inds.append({
++                    "code": f.code, "name_cn": f.name_cn,
++                    "value": f.value, "unit": f.unit, "grade": f.grade,
++                    "trend": trend_txt,
++                    "worsened": bool(comp.worsened) if comp else False,
++                })
++            why_bits = [f"{len(inds)} 项相关指标异常"]
++            n_worse = sum(1 for x in inds if x["worsened"])
++            if n_worse:
++                why_bits.append(f"其中 {n_worse} 项较上次真实恶化")
++            overview_items.append({
++                "rank": i + 1,
++                "rank_label": rank_labels[i] if i < 3 else "需要留意",
++                "group": it.group,
++                "department": it.department,
++                "priority": int(it.priority),
++                "priority_label": it.priority.label_cn(),
++                "indicators": inds,
++                "why": "、".join(why_bits),
++                "checkups": list(it.checkups),
++            })
++        # "目前相对稳定"：有数据、且未触发任何异常建议的系统。
++        # 组名口径对齐：Referral 的"血糖代谢"/"体重管理"映射到展示组名。
++        abnormal_groups = {it.group for it in advice.items}
++        present_codes = set(recs[COL_INDICATOR].unique())
++        _alias = {"血糖代谢": "血糖", "体重管理": "体格"}
++        abnormal_display = {_alias.get(g, g) for g in abnormal_groups}
++        stable_groups = [
++            g for g, codes in _TIMELINE_GROUPS.items()
++            if (set(codes) & present_codes) and g not in abnormal_display
++        ]
++
++        # -------- 本次最关注的问题（改动 2）：先回答用户关注，再报额外发现 --------
++        concern = (body.concern or "all").lower()
++        concern_groups = _CONCERN_TO_GROUPS.get(concern, ())
++        concern_items = [x for x in overview_items if x["group"] in concern_groups]
++        if concern in ("all", "other") or not concern_groups:
++            concern_answer = None
++        elif concern_items:
++            concern_answer = {
++                "status": "abnormal",
++                "items": [x["rank"] for x in concern_items],
++                "text": (
++                    f"你关注的「{_CONCERN_LABEL.get(concern, concern)}」方向"
++                    f"存在需要关注的异常，详见下方第 "
++                    f"{'、'.join(str(x['rank']) for x in concern_items)} 项。"
++                ),
++            }
++        else:
++            concern_answer = {
++                "status": "normal",
++                "items": [],
++                "text": (
++                    f"你关注的「{_CONCERN_LABEL.get(concern, concern)}」方向：本次已入库的"
++                    f"相关指标未见明显异常；系统同时完成了全身各系统扫描，"
++                    f"额外发现见下方总览。"
++                ),
++            }
++
++        # -------- 预测依据（改动 4）：数据范围 + 预测终点 + 演示标识 --------
++        reports = st.db.list_reports(body.patient_id)
++        exam_dates = sorted({str(x)[:10] for x in recs[COL_MEASURED_AT]})
++        by_code_dates: dict[str, set] = {}
++        for _, rr in recs.iterrows():
++            by_code_dates.setdefault(rr[COL_INDICATOR], set()).add(str(rr[COL_MEASURED_AT])[:10])
++        n_comparable = sum(1 for ds in by_code_dates.values() if len(ds) >= 2)
++        prediction_context = {
++            "n_reports": len(reports),
++            "n_records": int(len(recs)),
++            "n_dates": len(exam_dates),
++            "first_date": exam_dates[0] if exam_dates else None,
++            "last_date": exam_dates[-1] if exam_dates else None,
++            "n_comparable_indicators": int(n_comparable),
++            **st.model_card,
++        }
++
+         return {
+             "patient_id": body.patient_id,
+             "model_version": decision.version,
+             "arm": decision.arm,
++            "concern": concern,
++            "concern_label": _CONCERN_LABEL.get(concern, concern),
++            "concern_answer": concern_answer,
+             "results": results,
+             "monotonic_note": monotonic_note,
++            "risk_overview": {
++                "items": overview_items,
++                "stable_groups": stable_groups,
++            },
++            "prediction_context": prediction_context,
+             "referral": advice.to_dict(),
+         }
+ 
+@@ -633,8 +1078,11 @@ def build_server(app_data: str | Path):
+         patient = _patient_or_404(pid)
+         recs = _records_frame(pid)
+         pseudo = st.audit.pseudonymize(pid)
++        # recent_n=24：指标曲线要能画出用户上传的【全部】真实检查时间点
++        # （改动 5"近3次曲线 → 指标历史趋势"），时间范围筛选交给前端。
+         report = build_trend_report(
+             st.trend, recs, demographics=_demo_frame(patient),
++            recent_n=24,
+             audit=st.audit, pseudo_id=pseudo, horizons=tuple(st.horizons),
+         )
+         data = report.to_dict()
+@@ -772,9 +1220,14 @@ def build_server(app_data: str | Path):
+         )
+ 
+         lines = [l.strip() for l in extracted_text.splitlines() if l.strip()]
++        detected = _detect_report_date(extracted_text)
+         return {
+             "text": extracted_text,
+             "count": len(lines),
++            # 改版需求：上传报告 → OCR 识别 → 「识别到检查日期：xxxx」确认/修改；
++            # 识别不出（None）时前端再让用户填写。
++            "detected_date": detected[0],
++            "detected_date_source": detected[1],
+         }
+ 
+     # ---------------- 前端静态托管（必须最后挂载，避免吞掉 /api） ----------------
+@@ -783,6 +1236,61 @@ def build_server(app_data: str | Path):
+     return app
+ 
+ 
++#: 报告日期识别的关键词行（优先级从高到低）。化验单上通常同时印有
++#: 采集时间/接收时间/报告时间；对"这份数据属于哪一天"而言，采样/采集
++#: 时间最接近真实检验时点，报告时间次之。
++_DATE_LINE_KEYWORDS = ("采样", "采集", "抽血", "送检", "检验日期", "报告", "审核", "日期", "时间")
++
++
++def _detect_report_date(text: str) -> tuple[str | None, str | None]:
++    """
++    从 OCR 文本里识别真实检查日期。返回 (ISO 日期 | None, 命中说明 | None)。
++
++    识别不到就老老实实返回 None 让用户填 —— 宁可让用户确认一次，
++    也不能把错误日期悄悄写进时间轴（核查项 3 的反面教材就是时间字段错）。
++    """
++    import re as _re
++
++    if not text:
++        return None, None
++    today = datetime.now(timezone.utc).date()
++    pat = _re.compile(
++        r"(20\d{2})\s*[年./\-]\s*(\d{1,2})\s*[月./\-]\s*(\d{1,2})\s*日?"
++    )
++
++    def _valid(y: int, m: int, d: int):
++        try:
++            dt = date(y, m, d)
++        except ValueError:
++            return None
++        if dt.year < 2000 or dt > today:
++            return None
++        return dt
++
++    keyword_hits: list[tuple[date, str]] = []
++    any_hits: list[date] = []
++    for line in text.splitlines():
++        for m in pat.finditer(line):
++            dt = _valid(int(m.group(1)), int(m.group(2)), int(m.group(3)))
++            if dt is None:
++                continue
++            any_hits.append(dt)
++            for kw in _DATE_LINE_KEYWORDS:
++                if kw in line:
++                    keyword_hits.append((dt, kw))
++                    break
++    if keyword_hits:
++        # 关键词行内取最早出现的高优先关键词；同优先级取最大日期（末次时间戳）
++        best_kw_rank = min(_DATE_LINE_KEYWORDS.index(k) for _, k in keyword_hits)
++        cands = [d for d, k in keyword_hits
++                 if _DATE_LINE_KEYWORDS.index(k) == best_kw_rank]
++        pick = max(cands)
++        return pick.isoformat(), f"识别自「{_DATE_LINE_KEYWORDS[best_kw_rank]}」行"
++    if any_hits:
++        return max(any_hits).isoformat(), "识别自文本中的日期"
++    return None, None
++
++
+ _rapid_ocr_engine = None
+ 
+ 
+diff --git a/app/static/app.css b/app/static/app.css
+index 4123fab..3200d67 100644
+--- a/app/static/app.css
++++ b/app/static/app.css
+@@ -605,3 +605,178 @@ dialog .actions { display: flex; gap: 9px; justify-content: flex-end; margin-top
+ @media (prefers-reduced-motion: reduce) {
+   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+ }
++
++/* =====================================================================
++   v3 改版新增（改动 1-8）：批量导入 / 报告管理 / 健康时间轴 / 风险总览 /
++   未来预测块 / 人话随访 / 检查时间轴条 / AI Top3 / 折叠长文本
++   —— 全部沿用既有 token；饱和色仍只表示风险分层。
++   ===================================================================== */
++
++.steps.four { grid-template-columns: repeat(4, 1fr); }
++@media (max-width: 560px) { .steps.four { grid-template-columns: repeat(2, 1fr); } }
++.push { margin-left: auto; }
++
++.blocktitle { font: 700 15px/1.4 var(--sans); margin: 14px 0 10px; letter-spacing: .01em; }
++
++/* ---- 选择型 chips（关注点 / 时程 / 时间范围） ---- */
++.chips { display: flex; flex-wrap: wrap; gap: 8px; }
++.chip {
++  border: 1px solid var(--line); background: var(--surface-2); color: var(--ink-2);
++  border-radius: 999px; padding: 6px 14px; font: 500 13px/1.2 var(--sans);
++  cursor: pointer; transition: border-color .12s, color .12s, background .12s;
++}
++.chip:hover { border-color: var(--ink-3); }
++.chip.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
++
++/* ---- 批量上传：待确认卡 ---- */
++.pend {
++  border: 1px solid var(--line); border-radius: var(--radius-sm);
++  background: var(--surface-2); padding: 10px 12px; margin-bottom: 8px;
++}
++.pend-head { display: flex; align-items: baseline; gap: 10px; }
++.pend-name {
++  font: 600 13.5px/1.4 var(--sans);
++  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
++}
++.pend-date { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
++.pend-date input[type="date"] {
++  padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
++  background: var(--surface); color: var(--ink); font: 500 13px var(--sans);
++}
++
++/* ---- 我的历史检查资料 ---- */
++.rep-summary { font-size: 14px; color: var(--ink-2); margin-bottom: 10px; }
++.rep-summary b { color: var(--ink); }
++.rep-row {
++  display: grid; grid-template-columns: 150px 64px 76px 100px 1fr;
++  gap: 8px; align-items: center;
++  padding: 8px 4px; border-bottom: 1px solid var(--line-2); font-size: 13px;
++}
++.rep-row.rep-head { color: var(--ink-3); font-size: 12px; border-bottom: 1px solid var(--line); }
++.rep-row .num { text-align: right; font-variant-numeric: tabular-nums; }
++.rep-date input[type="date"] {
++  width: 100%; padding: 5px 6px; border: 1px solid transparent; border-radius: 8px;
++  background: transparent; color: var(--ink); font: 500 13px var(--sans);
++}
++.rep-date input[type="date"]:hover,
++.rep-date input[type="date"]:focus { border-color: var(--line); background: var(--surface); }
++.rep-ops { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
++.mini {
++  border: 1px solid var(--line); background: transparent; color: var(--ink-2);
++  border-radius: 8px; padding: 3px 9px; font: 500 12px var(--sans); cursor: pointer;
++}
++.mini:hover { border-color: var(--ink-3); color: var(--ink); }
++.mini.danger:hover { border-color: var(--t4); color: var(--t4); }
++@media (max-width: 640px) {
++  .rep-row { grid-template-columns: 130px 1fr 70px; }
++  .rep-row.rep-head span:nth-child(n+4), .rep-row > span:nth-child(4) { display: none; }
++  .rep-row .rep-ops { grid-column: 1 / -1; justify-content: flex-start; }
++}
++
++/* ---- 健康时间轴（数据确认） ---- */
++.tl-done { font-size: 15px; margin-bottom: 12px; }
++.tlg-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-top: 12px; }
++.tlg {
++  display: flex; align-items: center; gap: 8px; font-size: 13px;
++  border: 1px solid var(--line-2); border-radius: var(--radius-sm);
++  background: var(--surface-2); padding: 8px 10px;
++}
++.tlg-ic { color: var(--t1); font-weight: 700; }
++.tlg.warn .tlg-ic { color: var(--t2); }
++.ready-line { font-size: 13.5px; color: var(--t1); margin: 0 0 12px; font-weight: 600; }
++.ready-line.warn { color: var(--t2); }
++
++/* ---- 演示模型标识（核查项 4） ---- */
++.demo-banner {
++  margin-top: 14px; border: 1px solid var(--t2); background: var(--t2-bg);
++  color: var(--t2); border-radius: var(--radius-sm);
++  padding: 9px 12px; font-size: 12.5px; line-height: 1.55;
++}
++
++/* ---- 风险总览（改动 3） ---- */
++.concern-answer {
++  border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px;
++  font-size: 13.5px; line-height: 1.6;
++}
++.concern-answer.warn { background: var(--t3-bg); color: var(--t3); }
++.concern-answer.ok { background: var(--t1-bg); color: var(--t1); }
++.ov-item {
++  border: 1px solid var(--line); border-left-width: 3px;
++  border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 10px;
++  background: var(--surface-2);
++}
++.ov-item.p1 { border-left-color: var(--t4); }
++.ov-item.p2 { border-left-color: var(--t3); }
++.ov-item.p3 { border-left-color: var(--t2); }
++.ov-item.p4 { border-left-color: var(--line); }
++.ov-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
++.ov-inds { margin: 0; padding-left: 18px; font-size: 13px; }
++.ov-inds li { margin: 3px 0; }
++.ov-stable { font-size: 13px; color: var(--t1); margin-top: 4px; }
++
++/* ---- 未来预测块（改动 4） ---- */
++.endpoint-line { font-size: 13.5px; margin: 0 0 6px; color: var(--ink-2); }
++.endpoint-line b { color: var(--ink); }
++.judge { font-size: 14px; margin: 10px 0 4px; }
++.horizon-mini.clickable .hmini.sel { cursor: pointer; border-radius: 10px; padding: 6px 8px; }
++.horizon-mini.clickable .hmini.sel:hover { background: var(--surface-2); }
++.horizon-mini.clickable .hmini.sel.on { background: var(--surface-2); outline: 1px solid var(--line); }
++
++/* ---- 后续健康跟踪（改动 8） ---- */
++.fup-grid { display: flex; flex-direction: column; gap: 8px; }
++.fup-row { display: flex; gap: 12px; font-size: 13.5px; align-items: baseline; }
++.fup-row .k { flex: 0 0 108px; color: var(--ink-3); }
++.fup-row .v { flex: 1; }
++.autocompare {
++  border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px;
++  font-size: 13.5px; line-height: 1.55;
++}
++.autocompare.good { background: var(--t1-bg); color: var(--t1); }
++.autocompare.bad { background: var(--t4-bg); color: var(--t4); }
++.autocompare.flat { background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); }
++
++/* ---- 折叠区（科研字段 / AI 长文本） ---- */
++details.fold > summary {
++  cursor: pointer; user-select: none; font-size: 13px; color: var(--ink-3);
++  padding: 8px 0; list-style: none;
++}
++details.fold > summary::before { content: "▸ "; }
++details.fold[open] > summary::before { content: "▾ "; }
++details.fold > summary:hover { color: var(--ink); }
++
++/* ---- 检查时间轴条（本次 vs 上次 顶部） ---- */
++.exam-strip { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; }
++.es-lab { font: 500 11.5px var(--mono); color: var(--ink-3); white-space: nowrap; }
++.es-track {
++  position: relative; flex: 1; height: 14px; border-radius: 7px;
++  background: var(--paper-2); min-width: 120px;
++}
++.es-track i {
++  position: absolute; top: 50%; width: 8px; height: 8px; border-radius: 50%;
++  transform: translate(-50%, -50%);
++  background: var(--surface); border: 2px solid var(--ink-3);
++}
++.es-track i.cur { border-color: var(--ink); background: var(--ink); }
++
++/* ---- AI Top3（改动 7） ---- */
++.top3-title { font: 700 14.5px/1.4 var(--sans); margin-bottom: 10px; }
++.top3-item {
++  border: 1px solid var(--line); border-radius: var(--radius-sm);
++  background: var(--surface-2); padding: 10px 12px; margin-bottom: 8px;
++}
++.top3-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
++.top3-n {
++  width: 20px; height: 20px; border-radius: 50%; background: var(--ink); color: var(--paper);
++  display: grid; place-items: center; font: 700 12px var(--sans); flex: 0 0 auto;
++}
++.top3-body { margin-top: 6px; font-size: 13px; color: var(--ink-2); }
++.top3-body p { margin: 3px 0; }
++.top3-body b { color: var(--ink); font-weight: 600; }
++
++/* ---- 报告原文弹窗 ---- */
++.rawtext {
++  max-height: 46vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
++  background: var(--surface-2); border: 1px solid var(--line);
++  border-radius: var(--radius-sm); padding: 12px; margin: 0;
++  font: 12.5px/1.6 var(--mono); color: var(--ink-2);
++}
+diff --git a/app/static/app.js b/app/static/app.js
+index 2af4dcf..8bd0bbd 100644
+--- a/app/static/app.js
++++ b/app/static/app.js
+@@ -22,6 +22,16 @@ const state = {
+   meta: null, patients: [], pid: null, patient: null,
+   records: [], refMap: {}, trend: null, charts: {},
+   predicted: false, followedUp: false,
++  // 改版新增
++  reports: null,          // /reports 响应（历史检查资料清单）
++  timeline: null,         // /timeline 响应（健康时间轴确认数据）
++  riskTimeline: null,     // /risk-timeline 响应（按检查日期回溯的风险轨迹）
++  pending: [],            // 批量上传后待确认入库的报告 [{id,name,text,date,detected,src,nlines}]
++  concern: "all",        // 本次最关注的问题
++  lastPredict: null,      // 最近一次 /predict 响应
++  selHorizon: "3y",      // 未来预测区当前选中的时程
++  riskHorizon: "3y",     // 趋势页风险走势选中的时程
++  seriesRange: "all",    // 指标历史趋势时间范围
+ };
+ 
+ /* ---------------- 基础设施 ---------------- */
+@@ -110,7 +120,8 @@ function go(page) {
+ $$(".navbtn").forEach((b) => b.addEventListener("click", () => go(b.dataset.go)));
+ $("#btnSwitch").addEventListener("click", () => go("patients"));
+ $$(".step").forEach((b) => b.addEventListener("click", () => {
+-  const map = { ingest: "#sec-ingest", predict: "#sec-predict", followup: "#sec-followup" };
++  const map = { ingest: "#sec-ingest", timeline: "#sec-timeline",
++                predict: "#sec-predict", followup: "#sec-followup" };
+   $(map[b.dataset.step]).scrollIntoView({ behavior: "smooth", block: "start" });
+ }));
+ 
+@@ -181,15 +192,22 @@ async function selectPatient(pid, jump) {
+   state.pid = pid;
+   state.patient = state.patients.find((p) => p.patient_id === pid) || null;
+   state.trend = null; state.predicted = false; state.followedUp = false;
++  state.reports = null; state.timeline = null; state.riskTimeline = null;
++  state.pending = []; state.lastPredict = null;
+   store.set("drp.pid", pid);
+ 
+   renderCtx();
++  renderPending();
+   $("#predictOut").hidden = true;
+   $("#sec-factors").hidden = true;
+   $("#sec-referral").hidden = true;
+   $("#parseOut").hidden = true;
++  $("#autoCompareBox").hidden = true;
++  renderFollowupPlain();
+ 
+   await loadRecords();
++  await loadReports();
++  await loadTimeline();
+   await loadTraces();
+   updateSteps();
+   if (jump) go("work");
+@@ -334,13 +352,16 @@ function renderRecords() {
+   })).join("");
+ }
+ 
+-/* ---------------- 报告解析与自动入库 ---------------- */
+-async function parseAndIngestText(text) {
++/* ---------------- 报告解析与入库（真实检查日期随每份报告走） ---------------- */
++async function parseAndIngestText(text, measured_at) {
+   if (!state.pid) {
+     toast("先在「患者」里选一位", true);
+     return null;
+   }
+-  const measured_at = $("#repDate").value || new Date().toISOString().slice(0, 10);
++  if (!measured_at) {
++    toast("请先填写这份报告的检查日期", true);
++    return null;
++  }
+   const r = await api("/reports/parse", {
+     method: "POST",
+     body: { patient_id: state.pid, text: text, measured_at: measured_at },
+@@ -350,61 +371,144 @@ async function parseAndIngestText(text) {
+   state.patient = state.patients.find((p) => p.patient_id === state.pid);
+   renderCtx();
+   await loadRecords();
+-  state.trend = null;
++  await loadReports();
++  await loadTimeline();
++  state.trend = null; state.riskTimeline = null;
+   updateSteps();
+   return r;
+ }
+ 
+-/* ---------------- 拍照/上传图片识别 ---------------- */
++/* ---------------- 批量上传 → OCR → 检查日期确认 → 入库 ---------------- */
+ $("#btnOCR").addEventListener("click", () => { $("#repImage").click(); });
+ $("#repImage").addEventListener("change", async (e) => {
+-  const file = e.target.files[0];
+-  if (!file) return;
+-  if (!state.pid) { toast("先在「患者」里选一位", true); return; }
++  const files = [...e.target.files];
++  if (!files.length) return;
++  if (!state.pid) { toast("先在「患者」里选一位", true); $("#repImage").value = ""; return; }
+ 
+   const btn = $("#btnOCR");
+   btn.disabled = true;
+-  $("#parseStat").innerHTML = `<span class="spinner"></span> 正在识别并自动入库…`;
+-
+-  try {
+-    const b64 = await new Promise((ok, fail) => {
+-      const reader = new FileReader();
+-      reader.onload = () => ok(reader.result);
+-      reader.onerror = fail;
+-      reader.readAsDataURL(file);
+-    });
+-
+-    const ocrRes = await api("/ocr", { method: "POST", body: { image: b64 } });
+-    if (!ocrRes.text || !ocrRes.text.trim()) {
+-      $("#parseStat").textContent = "";
+-      toast("未识别到文字，请检查图片清晰度", true);
+-      return;
++  let done = 0;
++  for (const file of files) {
++    done += 1;
++    $("#parseStat").innerHTML =
++      `<span class="spinner"></span> 正在识别第 ${done}/${files.length} 份：${esc(file.name)}…`;
++    try {
++      const b64 = await new Promise((ok, fail) => {
++        const reader = new FileReader();
++        reader.onload = () => ok(reader.result);
++        reader.onerror = fail;
++        reader.readAsDataURL(file);
++      });
++      const ocr = await api("/ocr", { method: "POST", body: { image: b64 } });
++      if (!ocr.text || !ocr.text.trim()) {
++        toast(`「${file.name}」未识别到文字，已跳过`, true);
++        continue;
++      }
++      state.pending.push({
++        id: "p" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
++        name: file.name,
++        text: ocr.text,
++        date: ocr.detected_date || "",
++        detected: !!ocr.detected_date,
++        src: ocr.detected_date_source || "",
++        nlines: ocr.count || 0,
++      });
++      renderPending();
++    } catch (err) {
++      toast(`「${file.name}」识别失败：${err.message}`, true);
+     }
++  }
++  $("#parseStat").textContent = "";
++  btn.disabled = false;
++  $("#repImage").value = "";
++  if (state.pending.length) {
++    const nAuto = state.pending.filter((p) => p.detected).length;
++    toast(`已识别 ${state.pending.length} 份报告，其中 ${nAuto} 份自动识别到检查日期，请确认后入库`);
++  }
++});
+ 
+-    $("#repText").value = ocrRes.text;
++function renderPending() {
++  const wrap = $("#pendingWrap"), box = $("#pendingList");
++  if (!state.pending.length) { wrap.hidden = true; box.innerHTML = ""; return; }
++  wrap.hidden = false;
++  $("#pendingCount").textContent = `${state.pending.length} 份待确认`;
++  box.innerHTML = state.pending.map((p) => `
++    <div class="pend" data-pend="${p.id}">
++      <div class="pend-head">
++        <span class="pend-name" title="${esc(p.name)}">${esc(p.name)}</span>
++        <span class="muted">识别 ${p.nlines} 行文本</span>
++      </div>
++      <div class="pend-date">
++        ${p.detected
++          ? `<span class="tag t1">已识别检查日期</span><span class="muted" style="font-size:11.5px">${esc(p.src)}</span>`
++          : `<span class="tag t2">未识别到日期，请填写</span>`}
++        <input type="date" class="pend-input" value="${esc(p.date)}">
++        <span style="flex:1"></span>
++        <button class="btn sm" data-ok="${p.id}">确认入库</button>
++        <button class="btn ghost sm" data-rm="${p.id}">移除</button>
++      </div>
++    </div>`).join("");
++  $$("#pendingList [data-ok]").forEach((b) =>
++    b.addEventListener("click", () => confirmPending(b.dataset.ok)));
++  $$("#pendingList [data-rm]").forEach((b) =>
++    b.addEventListener("click", () => {
++      state.pending = state.pending.filter((p) => p.id !== b.dataset.rm);
++      renderPending();
++    }));
++  $$("#pendingList .pend-input").forEach((inp) =>
++    inp.addEventListener("change", () => {
++      const it = state.pending.find((p) => p.id === inp.closest(".pend").dataset.pend);
++      if (it) { it.date = inp.value; it.detected = false; it.src = "手动填写"; }
++    }));
++}
+ 
+-    // 自动直接执行解析入库
+-    const parseRes = await parseAndIngestText(ocrRes.text);
+-    $("#parseStat").textContent = "";
+-    if (parseRes) {
+-      toast(`已自动识别并入库 ${parseRes.stored} 项指标`);
+-    }
+-  } catch (err) {
+-    $("#parseStat").textContent = "";
+-    toast(err.message || "识别/入库失败", true);
+-  } finally {
+-    btn.disabled = false;
+-    $("#repImage").value = "";
++async function confirmPending(id, silent = false) {
++  const it = state.pending.find((p) => p.id === id);
++  if (!it) return false;
++  if (!it.date) { if (!silent) toast(`「${it.name}」还没有检查日期`, true); return false; }
++  try {
++    const r = await parseAndIngestText(it.text, it.date);
++    if (!r) return false;
++    state.pending = state.pending.filter((p) => p.id !== id);
++    renderPending();
++    if (!silent) toast(`「${it.name}」已入库 ${r.stored} 项（检查日期 ${it.date}）`);
++    if (!state.pending.length) await afterBatchIngest();
++    return true;
++  } catch (e) { toast(`「${it.name}」入库失败：${e.message}`, true); return false; }
++}
++
++$("#btnConfirmAll").addEventListener("click", async () => {
++  const missing = state.pending.filter((p) => !p.date);
++  if (missing.length)
++    return toast(`还有 ${missing.length} 份未填写检查日期`, true);
++  const btn = $("#btnConfirmAll");
++  btn.disabled = true;
++  let ok = 0;
++  for (const it of [...state.pending]) {
++    $("#parseStat").innerHTML =
++      `<span class="spinner"></span> 正在入库：${esc(it.name)}…`;
++    if (await confirmPending(it.id, true)) ok += 1;
+   }
++  $("#parseStat").textContent = "";
++  btn.disabled = false;
++  toast(`批量入库完成：成功 ${ok} 份`);
+ });
+ 
++/** 批量导入完成后的收尾：滚到时间轴确认；若已有历史预测则自动比较。 */
++async function afterBatchIngest() {
++  $("#sec-timeline").scrollIntoView({ behavior: "smooth", block: "start" });
++  if (state.patient?.last_predicted_at) await autoCompareWithLast();
++}
++
+ /* ---------------- 填充示例 ---------------- */
+ $("#btnSample").addEventListener("click", async () => {
+   $("#repText").value = state.meta.sample_report;
++  $("#detailsManualText").open = true;
++  if (!$("#repDate").value) $("#repDate").value = new Date().toISOString().slice(0, 10);
+   if (state.pid) {
+     $("#parseStat").innerHTML = `<span class="spinner"></span> 解析中…`;
+     try {
+-      const r = await parseAndIngestText(state.meta.sample_report);
++      const r = await parseAndIngestText(state.meta.sample_report, $("#repDate").value);
+       $("#parseStat").textContent = "";
+       if (r) toast(`示例已入库 ${r.stored} 条`);
+     } catch (e) {
+@@ -417,18 +521,147 @@ $("#btnSample").addEventListener("click", async () => {
+ /* ---------------- 手动点击解析 ---------------- */
+ $("#btnParse").addEventListener("click", async () => {
+   const btn = $("#btnParse");
++  const d = $("#repDate").value;
++  if (!d) return toast("请先填写这份报告的检查日期", true);
+   btn.disabled = true;
+   $("#parseStat").innerHTML = `<span class="spinner"></span> 解析中…`;
+   try {
+-    const r = await parseAndIngestText($("#repText").value);
++    const r = await parseAndIngestText($("#repText").value, d);
+     $("#parseStat").textContent = "";
+-    if (r) toast(`入库 ${r.stored} 条`);
++    if (r) toast(`入库 ${r.stored} 条（检查日期 ${d}）`);
+   } catch (e) {
+     $("#parseStat").textContent = "";
+     toast(e.message, true);
+   } finally { btn.disabled = false; }
+ });
+ 
++/* ---------------- 我的历史检查资料（逐份可见 · 可管理） ---------------- */
++async function loadReports() {
++  if (!state.pid) return;
++  state.reports = await api(`/patients/${encodeURIComponent(state.pid)}/reports`);
++  renderReports();
++}
++
++const ym = (d) => d ? String(d).slice(0, 7).replace("-", ".") : "—";
++
++function renderReports() {
++  const box = $("#reportTable"), sumEl = $("#reportsSummary");
++  const d = state.reports;
++  if (!d || !d.reports.length) {
++    sumEl.innerHTML = `还没有上传过报告`;
++    box.innerHTML = "";
++    return;
++  }
++  const s = d.summary;
++  sumEl.innerHTML =
++    `<b>已上传 ${s.n_reports} 份报告</b>｜${ym(s.first_date)}—${ym(s.last_date)}｜识别 ${s.n_stored_total} 条指标`;
++  box.innerHTML = `
++    <div class="rep-row rep-head">
++      <span>检查日期</span><span>报告</span><span class="num">识别结果</span><span>状态</span><span></span>
++    </div>` +
++    d.reports.map((r) => `
++    <div class="rep-row" data-rep="${r.id}">
++      <span class="rep-date"><input type="date" value="${esc(String(r.measured_at).slice(0, 10))}"
++            title="修改检查日期后自动保存"></span>
++      <span class="rep-name mono">#${r.id}</span>
++      <span class="num">${r.n_stored} 项</span>
++      <span>${r.n_stored ? `<span class="tag t1">✓ 已入库</span>` : `<span class="tag t2">无有效指标</span>`}</span>
++      <span class="rep-ops">
++        <button class="mini" data-view="${r.id}">查看原文</button>
++        <button class="mini" data-reparse="${r.id}">重新识别</button>
++        <button class="mini danger" data-del="${r.id}">删除</button>
++      </span>
++    </div>`).join("");
++
++  $$("#reportTable .rep-date input").forEach((inp) =>
++    inp.addEventListener("change", async () => {
++      const id = inp.closest(".rep-row").dataset.rep;
++      if (!inp.value) return;
++      try {
++        await api(`/reports/${id}`, { method: "PATCH", body: { measured_at: inp.value } });
++        toast(`报告 #${id} 检查日期已改为 ${inp.value}，趋势与时间轴同步更新`);
++        state.trend = null; state.riskTimeline = null;
++        await loadRecords(); await loadReports(); await loadTimeline();
++      } catch (e) { toast(e.message, true); await loadReports(); }
++    }));
++  $$("#reportTable [data-view]").forEach((b) =>
++    b.addEventListener("click", async () => {
++      try {
++        const r = await api(`/reports/${b.dataset.view}`);
++        $("#dlgReportMeta").textContent =
++          `报告 #${r.id} · 检查日期 ${String(r.measured_at).slice(0, 10)} · 上传于 ${String(r.created_at).slice(0, 10)}`;
++        $("#dlgReportText").textContent = r.raw_text;
++        $("#dlgReport").showModal();
++      } catch (e) { toast(e.message, true); }
++    }));
++  $$("#reportTable [data-reparse]").forEach((b) =>
++    b.addEventListener("click", async () => {
++      b.disabled = true;
++      try {
++        const r = await api(`/reports/${b.dataset.reparse}/reparse`, { method: "POST", body: {} });
++        toast(`报告 #${b.dataset.reparse} 已重新识别，入库 ${r.stored} 项`);
++        state.trend = null; state.riskTimeline = null;
++        await loadRecords(); await loadReports(); await loadTimeline();
++      } catch (e) { toast(e.message, true); } finally { b.disabled = false; }
++    }));
++  $$("#reportTable [data-del]").forEach((b) =>
++    b.addEventListener("click", async () => {
++      if (!confirm(`删除报告 #${b.dataset.del} 及其全部指标记录？此操作不可恢复。`)) return;
++      try {
++        await api(`/reports/${b.dataset.del}`, { method: "DELETE" });
++        toast(`报告 #${b.dataset.del} 已删除`);
++        state.trend = null; state.riskTimeline = null;
++        await refreshPatients();
++        state.patient = state.patients.find((p) => p.patient_id === state.pid);
++        renderCtx();
++        await loadRecords(); await loadReports(); await loadTimeline();
++        updateSteps();
++      } catch (e) { toast(e.message, true); }
++    }));
++}
++$("#dlgReportClose").addEventListener("click", () => $("#dlgReport").close());
++
++/* ---------------- 数据确认 · 健康时间轴 ---------------- */
++async function loadTimeline() {
++  if (!state.pid) return;
++  state.timeline = await api(`/patients/${encodeURIComponent(state.pid)}/timeline`);
++  renderTimeline();
++  updateSteps();
++}
++
++function renderTimeline() {
++  const t = state.timeline, box = $("#timelineBox");
++  if (!t || !t.n_records) {
++    box.innerHTML = `<div class="empty"><b>还没有可确认的数据</b>先在上面导入至少一份历史报告</div>`;
++    return;
++  }
++  const groups = t.groups.map((g) => {
++    const ok = g.n_timepoints >= 2;
++    return `<div class="tlg ${ok ? "" : "warn"}">
++      <span class="tlg-ic">${ok ? "✓" : "⚠"}</span>
++      <span>${esc(g.group)}</span>
++      <span class="muted">${ok ? `${g.n_timepoints} 个时间点` : `仅 ${g.n_timepoints} 个时间点`}</span>
++    </div>`;
++  }).join("");
++  box.innerHTML = `
++    <div class="tl-done"><b>已建立个人健康时间轴</b></div>
++    <div class="stat-row">
++      <div class="stat"><div class="v">${esc(t.span_label)}</div><div class="k">数据跨度</div></div>
++      <div class="stat"><div class="v">${t.n_reports}</div><div class="k">检查报告</div></div>
++      <div class="stat"><div class="v">${t.n_records}</div><div class="k">有效记录</div></div>
++      <div class="stat"><div class="v">${t.n_comparable_indicators}</div><div class="k">可连续比较指标</div></div>
++    </div>
++    <div class="tlg-list">${groups}</div>
++    <div class="divider"></div>
++    ${t.longitudinal_ready
++      ? `<p class="ready-line">✓ 数据已具备纵向趋势分析条件（${esc(t.first_date)} — ${esc(t.last_date)}）</p>
++         <button class="btn block" id="btnGoPredict">开始风险预测</button>`
++      : `<p class="ready-line warn">⚠ 目前只有 ${t.n_dates} 个检查时间点；补充不同日期的报告后才能做纵向趋势分析（单次数据仍可预测，但没有趋势特征）。</p>
++         <button class="btn ghost block" id="btnGoPredict">仍要基于单次数据预测</button>`}`;
++  $("#btnGoPredict").addEventListener("click", () =>
++    $("#sec-predict").scrollIntoView({ behavior: "smooth", block: "start" }));
++}
++
+ function renderParse(r) {
+   $("#parseOut").hidden = false;
+   // 过滤只展示成功匹配并入库的指标，不展示失败或噪声行
+@@ -472,19 +705,29 @@ function tierPos(p, cuts) {
+   return { idx: i, pct: ((i + Math.max(0, Math.min(1, inner))) / n) * 100 };
+ }
+ 
++/* 本次最关注的问题（改动 2）：单选 chip，随预测请求提交 */
++$$("#concernChips .chip").forEach((b) => b.addEventListener("click", () => {
++  state.concern = b.dataset.concern;
++  $$("#concernChips .chip").forEach((x) => x.classList.toggle("on", x === b));
++}));
++
+ $("#btnPredict").addEventListener("click", async () => {
+   if (!state.pid) return toast("先在「患者」里选一位", true);
+   const btn = $("#btnPredict");
+   btn.disabled = true;
+-  $("#predStat").innerHTML = `<span class="spinner"></span> 特征管线 + 多时程推理中…`;
++  $("#predStat").innerHTML = `<span class="spinner"></span> 读取全部历史数据 → 时序特征管线 → 多时程推理中…`;
+   try {
+-    const r = await api("/predict", { method: "POST", body: { patient_id: state.pid } });
++    const r = await api("/predict", {
++      method: "POST", body: { patient_id: state.pid, concern: state.concern },
++    });
+     $("#predStat").textContent = "";
+     renderPredict(r);
+     state.predicted = true;
+-    state.trend = null;
++    state.trend = null; state.riskTimeline = null;
+     await loadTraces();
+     await refreshPatients();
++    state.patient = state.patients.find((p) => p.patient_id === state.pid);
++    renderFollowupPlain();
+     updateSteps();
+   } catch (e) {
+     $("#predStat").textContent = "";
+@@ -492,16 +735,57 @@ $("#btnPredict").addEventListener("click", async () => {
+   } finally { btn.disabled = false; }
+ });
+ 
+-function renderPredict(r) {
+-  $("#predictOut").hidden = false;
+-  const main = r.results.find((x) => x.horizon === "3y") || r.results[r.results.length - 1];
++const RANK_TONE = { 1: "t4", 2: "t3", 3: "t2" };
++
++function renderOverview(r) {
++  // ① 先回答用户主动关注的问题
++  const ca = r.concern_answer, caBox = $("#concernAnswerBox");
++  if (ca) {
++    caBox.hidden = false;
++    caBox.className = "concern-answer " + (ca.status === "abnormal" ? "warn" : "ok");
++    caBox.innerHTML = `<b>你关注的「${esc(r.concern_label)}」：</b>${esc(ca.text)}`;
++  } else caBox.hidden = true;
++
++  // ② 风险优先级排序（改动 3）：首要/第二/第三关注 + 为什么排这里
++  const ov = r.risk_overview || { items: [], stable_groups: [] };
++  const items = ov.items.map((it) => {
++    const inds = it.indicators.map((x) => {
++      const trend = x.trend
++        ? `<span class="tag ${x.worsened ? "t3" : "line"}" style="margin-left:6px">${esc(x.trend)}</span>`
++        : "";
++      return `<li>${esc(x.name_cn)} <b class="mono">${num(x.value)}${esc(x.unit)}</b>
++        ${gradeTag(x.grade)}${trend}</li>`;
++    }).join("");
++    return `<div class="ov-item p${Math.min(it.rank, 4)}">
++      <div class="ov-head">
++        <span class="tag ${RANK_TONE[it.rank] || "line"}">${esc(it.rank_label)}</span>
++        <b>${esc(it.group)}相关异常</b>
++        <span class="muted">→ ${esc(it.department)} · ${esc(it.priority_label)}</span>
++      </div>
++      <div class="muted" style="margin:2px 0 6px">为什么排在这里：${esc(it.why)}</div>
++      <ul class="ov-inds">${inds}</ul>
++    </div>`;
++  }).join("");
++  const stable = (ov.stable_groups && ov.stable_groups.length)
++    ? `<div class="ov-stable">目前相对稳定：${ov.stable_groups.map(esc).join("、")}</div>` : "";
++  $("#riskOverviewBox").innerHTML = items ||
++    `<div class="empty"><b>本次未发现需要重点关注的异常</b>保持定期体检即可</div>`;
++  $("#riskOverviewBox").innerHTML += stable;
++}
++
++function selectHorizon(h) {
++  const r = state.lastPredict;
++  if (!r) return;
++  const main = r.results.find((x) => x.horizon === h) || r.results[r.results.length - 1];
++  state.selHorizon = main.horizon;
+   const tiers = (state.meta.tiers || {})[main.horizon];
+   const cuts = tiers ? tiers.cutpoints : [0.05, 0.15, 0.4];
+   const names = tiers ? tiers.names : ["低危", "中危", "高危", "极高危"];
+   const pos = tierPos(main.probability, cuts);
+   const color = tierColor(main.risk_tier);
+ 
+-  $("#heroHorizon").textContent = (main.horizon || "").toUpperCase() + " 进展风险";
++  const hCn = H_LABEL[main.horizon] || main.horizon;
++  $("#heroHorizon").textContent = `未来 ${hCn}内 · ${state.lastPredict.prediction_context?.endpoint_label || "综合健康风险"}`;
+   $("#heroProb").innerHTML = `${(main.probability * 100).toFixed(1)}<span>%</span>`;
+   $("#heroProb").style.color = color;
+   $("#heroTier").innerHTML =
+@@ -517,25 +801,61 @@ function renderPredict(r) {
+     <div class="cuts">${names.map((nm, i) =>
+       `<span>${esc(nm)}${i < cuts.length ? `<br>&lt; ${(cuts[i] * 100).toFixed(0)}%` : ""}</span>`).join("")}</div>`;
+ 
+-  // 其余时程
++  $("#modelJudge").innerHTML =
++    `模型判断：未来 <b>${esc(hCn)}</b>内属于「<b style="color:${color}">${esc(main.risk_tier)}</b>」风险区间`;
++
++  // 三个时间窗口做成可点行（改动 4）
+   $("#horizonMini").innerHTML = r.results.map((x) => {
+     const c = (state.meta.tiers || {})[x.horizon];
+     const p2 = tierPos(x.probability, c ? c.cutpoints : cuts);
+-    return `<div class="hmini">
+-      <span class="hl">${(x.horizon || "").toUpperCase()}</span>
++    return `<div class="hmini sel ${x.horizon === main.horizon ? "on" : ""}" data-h="${esc(x.horizon)}"
++                 title="点击查看该时间窗口的风险因素与解释">
++      <span class="hl">未来${esc(H_LABEL[x.horizon] || x.horizon)}</span>
+       <span class="bar"><i style="width:${p2.pct}%;background:${tierColor(x.risk_tier)}"></i></span>
+       <span class="pv" style="color:${tierColor(x.risk_tier)}">${pct1(x.probability)}</span>
+       <span class="tag t${TIER_IDX[x.risk_tier] || 1}">${esc(x.risk_tier)}</span>
+     </div>`;
+   }).join("");
++  $$("#horizonMini .hmini").forEach((el) =>
++    el.addEventListener("click", () => selectHorizon(el.dataset.h)));
++
++  $("#factorHorizonNote").textContent =
++    `当前展示：未来 ${hCn}窗口的指标贡献（点击上方时间窗口可切换）`;
++  renderFactors(main);
++  $("#narrative").textContent = main.narrative;
++}
++
++function renderPredict(r) {
++  state.lastPredict = r;
++  $("#predictOut").hidden = false;
++
++  // 演示模型标识（核查项 4：不能包装成临床验证的疾病发生概率）
++  const ctx = r.prediction_context || {};
++  const banner = $("#demoBanner");
++  if (ctx.development_only) {
++    banner.hidden = false;
++    banner.textContent = "⚠ " + (ctx.development_note ||
++      "当前为演示模型：概率为统计演示值，未经过真实临床队列验证。");
++  } else banner.hidden = true;
++
++  renderOverview(r);
++
++  $("#endpointLabel").innerHTML =
++    `预测目标：<b>${esc(ctx.endpoint_label || "综合健康风险进展")}</b>` +
++    (ctx.endpoint_detail ? `<span class="muted" style="display:block;margin-top:2px">${esc(ctx.endpoint_detail)}</span>` : "");
++
++  $("#predBasis").textContent = ctx.n_reports != null
++    ? `预测依据：${ym(ctx.first_date)}—${ym(ctx.last_date)} 期间 ${ctx.n_reports} 份检查报告 · ` +
++      `${ctx.n_dates} 个检查时间点 · 共 ${ctx.n_comparable_indicators} 项可连续比较指标（有效记录 ${ctx.n_records} 条）`
++    : "";
++
++  selectHorizon(state.selHorizon || "3y");
+ 
+   $("#servedBy").textContent =
+     `服务版本 ${r.model_version}（${r.arm === "canary" ? "灰度臂" : "全量臂"}）· ` +
+     `每个时程一条独立 trace，已写入全链路日志`;
+ 
+-  renderFactors(main);
+   renderReferral(r.referral);
+-  $("#narrative").textContent = main.narrative;
+   $("#monotonicNote").textContent = r.monotonic_note || "";
+ }
+ 
+@@ -608,12 +928,91 @@ $("#btnFeedback").addEventListener("click", async () => {
+   } catch (e) { toast(e.message, true); }
+ });
+ 
+-/* ---------------- 步骤状态 ---------------- */
++/* ---------------- 后续健康跟踪（普通用户人话版，改动 8） ---------------- */
++const RECHECK_BY_TIER = {
++  "极高危": "建议 1 个月内复查", "高危": "建议 1~3 个月内复查",
++  "中危": "建议 3~6 个月内复查", "低危": "建议 6~12 个月复查",
++};
++
++function renderFollowupPlain() {
++  const box = $("#followupPlain");
++  const lastAt = state.patient?.last_predicted_at;
++  const r = state.lastPredict;
++  if (!lastAt && !r) {
++    box.innerHTML = `<div class="empty"><b>先完成一次风险预测</b>之后这里会给出建议复查时间与项目</div>`;
++    return;
++  }
++  const main = r ? (r.results.find((x) => x.horizon === "3y") || r.results[0]) : null;
++  const tier = main ? main.risk_tier : null;
++  const checkups = r
++    ? [...new Set((r.referral?.items || []).flatMap((it) => it.checkups))].slice(0, 8)
++    : [];
++  box.innerHTML = `
++    <div class="fup-grid">
++      <div class="fup-row"><span class="k">上次评估</span>
++        <span class="v">${lastAt ? esc(String(lastAt).slice(0, 10)) : "本次会话"}${
++          tier ? ` · <span class="tag t${TIER_IDX[tier] || 1}">${esc(tier)}</span>` : ""}</span></div>
++      <div class="fup-row"><span class="k">建议复查时间</span>
++        <span class="v">${tier ? esc(RECHECK_BY_TIER[tier] || "建议 6~12 个月复查") : "完成一次预测后给出"}</span></div>
++      <div class="fup-row"><span class="k">需要复查的项目</span>
++        <span class="v">${checkups.length ? checkups.map(esc).join("、") : "以「就医建议」卡片为准"}</span></div>
++    </div>
++    <p class="muted" style="margin:10px 0 0">到时候把新报告传进来，系统会自动和这次比较，告诉你是
++      <b>改善 / 稳定 / 升高</b>。</p>`;
++}
++
++/** 上传新报告后自动比较（改动 8）：跑一次新预测，与上一次的 3 年风险比。 */
++async function autoCompareWithLast() {
++  if (!state.pid) return;
++  try {
++    // 取"上一次"基线：审计走势里 3y 的最后一个点（本次上传之前的最近预测）
++    const trendBefore = await api(`/patients/${encodeURIComponent(state.pid)}/trend`);
++    const prevPts = trendBefore.risk_trajectories?.["3y"]?.points || [];
++    if (!prevPts.length) return;
++    const prev = prevPts[prevPts.length - 1];
++
++    toast("检测到新报告，正在自动与上次评估比较…");
++    const r = await api("/predict", {
++      method: "POST", body: { patient_id: state.pid, concern: state.concern },
++    });
++    renderPredict(r);
++    state.predicted = true;
++    state.trend = null; state.riskTimeline = null;
++    await loadTraces(); await refreshPatients();
++    state.patient = state.patients.find((p) => p.patient_id === state.pid);
++    renderFollowupPlain();
++    updateSteps();
++
++    const curr = r.results.find((x) => x.horizon === "3y") || r.results[0];
++    const dpp = (curr.probability - prev.probability) * 100;
++    let verdict, cls;
++    if (dpp <= -2) { verdict = "改善"; cls = "good"; }
++    else if (dpp >= 2) { verdict = "升高"; cls = "bad"; }
++    else { verdict = "稳定"; cls = "flat"; }
++    const box = $("#autoCompareBox");
++    box.hidden = false;
++    box.className = "autocompare " + cls;
++    box.innerHTML =
++      `自动比较：3 年风险 ${pct1(prev.probability)}（${esc(String(prev.at).slice(0, 10))}）` +
++      ` → ${pct1(curr.probability)}（本次），<b>${verdict}</b>` +
++      `（变化 ${dpp > 0 ? "+" : ""}${dpp.toFixed(1)} 个百分点）`;
++    toast(`与上次相比：风险${verdict}`);
++  } catch (e) {
++    toast("自动比较失败：" + e.message, true);
++  }
++}
++
++/* ---------------- 步骤状态（4 步） ---------------- */
+ function updateSteps() {
+   const hasRec = (state.patient?.n_records || 0) > 0;
++  const tlReady = !!state.timeline?.longitudinal_ready;
+   const hasPred = state.predicted || !!state.patient?.last_predicted_at;
+-  const set = (k, v) => $(`.step[data-step="${k}"]`).dataset.state = v;
++  const set = (k, v) => {
++    const el = $(`.step[data-step="${k}"]`);
++    if (el) el.dataset.state = v;
++  };
+   set("ingest", hasRec ? "done" : "now");
++  set("timeline", tlReady ? "done" : hasRec ? "now" : "idle");
+   set("predict", hasPred ? "done" : hasRec ? "now" : "idle");
+   set("followup", state.followedUp ? "done" : hasPred ? "now" : "idle");
+ }
+@@ -621,36 +1020,20 @@ function updateSteps() {
+ /* ---------------- 趋势 ---------------- */
+ async function loadTrend(force = false) {
+   if (!state.pid) return;
+-  if (force) state.trend = null;
++  if (force) { state.trend = null; state.riskTimeline = null; }
+   const t = (!force && state.trend) ? state.trend : (await api(`/patients/${encodeURIComponent(state.pid)}/trend`));
+   state.trend = t;
+ 
+-  // 风险走势：线色中性表示"哪个时程"，点色表示"当时哪一层"——
+-  // 保持"饱和色只表示风险等级"这条全站规则。
+-  const inks = [token("--ink"), token("--ink-2"), token("--ink-3")];
+-  // 顶层 color 决定图例图标色；不设它 echarts 会退回默认蓝绿黄调色板。
+-  const series = Object.entries(t.risk_trajectories).map(([h, traj], i) => ({
+-    name: H_LABEL[h] || h, type: "line", smooth: 0.25, symbolSize: 9,
+-    lineStyle: { width: 2, color: inks[i % 3] },
+-    itemStyle: { color: (p) => tierColor(traj.points[p.dataIndex].risk_tier) },
+-    data: traj.points.map((p) => [p.at, +(p.probability * 100).toFixed(2)]),
+-  }));
+-  const has = series.some((s) => s.data.length);
+-  $("#riskEmpty").hidden = has;
+-  $("#riskChart").style.display = has ? "" : "none";
+-  if (has) {
+-    chart("riskChart").setOption({
+-      ...baseOption(),
+-      color: inks,
+-      legend: { top: 0, right: 0, icon: "roundRect", itemWidth: 10, itemHeight: 3,
+-                textStyle: { color: token("--ink-2"), fontSize: 11 } },
+-      tooltip: { ...baseOption().tooltip, valueFormatter: (v) => v + "%" },
+-      yAxis: { ...baseOption().yAxis, name: "风险概率 %", min: 0 },
+-      series,
+-    }, true);
+-  }
++  await drawRiskTimeline();
++
++  // 本次 vs 上次：标题写明确日期（改动 5），并画出整段检查时间轴
++  const dates = [...new Set(state.records.map((r) => String(r.measured_at).slice(0, 10)))].sort();
++  const dot = (d) => d ? d.replaceAll("-", ".") : "—";
++  $("#compareDates").textContent = dates.length >= 2
++    ? `本次 ${dot(dates[dates.length - 1])} vs 上次 ${dot(dates[dates.length - 2])}`
++    : "超过临床变化阈值才判为真实变化";
++  renderExamStrip(dates);
+ 
+-  // 本次 vs 上次：复用参考区间带，把"上次→本次"的位移画出来
+   const cbox = $("#compareList");
+   $("#compareEmpty").hidden = !!t.comparisons.length;
+   cbox.innerHTML = t.comparisons.map((c) => {
+@@ -660,21 +1043,171 @@ async function loadTrend(force = false) {
+       : `<span class="tag line">RCV 内 · 视为平稳</span>`;
+     const d = `<span class="mono" style="margin-left:6px">${c.delta > 0 ? "+" : ""}${
+       num(c.delta)}${c.delta_pct != null ? `（${(c.delta_pct * 100).toFixed(0)}%）` : ""}</span>`;
++    const pair = `<span class="muted" style="margin-left:6px;font-size:11px">${
++      esc(String(c.prev_at).slice(0, 10))} → ${esc(String(c.curr_at).slice(0, 10))}</span>`;
+     return bandRow({
+       name: c.name_cn, code: c.code, unit: c.unit, value: c.curr_value, prev: c.prev_value,
+-      low: ref.low, high: ref.high, grade: c.curr_grade, extra: " " + verdict + d,
++      low: ref.low, high: ref.high, grade: c.curr_grade, extra: " " + verdict + d + pair,
+     });
+   }).join("");
+ 
+-  // 指标曲线：参考区间画成背景带，比在图例里写"正常范围"直观
++  // 指标历史趋势：全部真实检查时间点 + 时间范围筛选
+   const sel = $("#seriesSel");
+   sel.innerHTML = t.series.map((s, i) => `<option value="${i}">${esc(s.name_cn)}</option>`).join("");
+   sel.onchange = () => drawSeries(t.series[+sel.value]);
+   if (t.series.length) drawSeries(t.series[0]);
+   $("#trendText").textContent = t.rendered_text;
++  renderAITop3(t);
+   renderAIAdvisor(t);
+ }
+ 
++/* 风险走势（按真实检查日期回溯）：历史实线 + 未来预测虚线（改动 5/6）。
++   审计走势（按预测发生时间）保留给管理台复盘，不再作为用户侧曲线 ——
++   它在同一天连传 8 份报告时只会画出一条竖线/平线，正是本次要修的问题。 */
++async function drawRiskTimeline() {
++  if (!state.riskTimeline) {
++    try {
++      state.riskTimeline = await api(`/patients/${encodeURIComponent(state.pid)}/risk-timeline`);
++    } catch (e) { toast(e.message, true); return; }
++  }
++  const rt = state.riskTimeline;
++  const pts = rt.points || [];
++  const has = pts.length > 0;
++  $("#riskEmpty").hidden = has;
++  $("#riskChart").style.display = has ? "" : "none";
++  $("#riskBasisNote").textContent = has
++    ? `实线：各检查日期当时可得数据的回溯风险（${rt.model_version || ""}）；` +
++      `虚线：自最近一次检查（${pts[pts.length - 1].at}）起，未来 1/3/5 年内的累计风险预测。预测≠确定结果。`
++    : "";
++  if (!has) return;
++
++  const h = state.riskHorizon;
++  const histData = pts
++    .filter((p) => p.horizons[h])
++    .map((p) => [p.at, +(p.horizons[h].probability * 100).toFixed(2), p.horizons[h].risk_tier]);
++
++  // 未来累计风险：从最近检查日出发，P(≤+0)=0 起笔，经 +1y/+3y/+5y 三点
++  const last = pts[pts.length - 1];
++  const lastMs = new Date(last.at).getTime();
++  const DAY = 86400000;
++  const futureData = [[last.at, 0, null]];
++  [["1y", 365], ["3y", 1095], ["5y", 1825]].forEach(([hz, days]) => {
++    if (last.horizons[hz]) {
++      futureData.push([
++        new Date(lastMs + days * DAY).toISOString().slice(0, 10),
++        +(last.horizons[hz].probability * 100).toFixed(2),
++        `未来${H_LABEL[hz] || hz}`,
++      ]);
++    }
++  });
++
++  const base = baseOption();
++  chart("riskChart").setOption({
++    ...base,
++    color: [token("--ink"), token("--ink-3")],
++    legend: { top: 0, right: 0, icon: "roundRect", itemWidth: 12, itemHeight: 3,
++              textStyle: { color: token("--ink-2"), fontSize: 11 } },
++    tooltip: {
++      ...base.tooltip,
++      formatter: (ps) => ps.map((p) => {
++        const tag = p.data[2] ? `（${p.data[2]}）` : "";
++        return `${p.marker}${p.seriesName} ${String(p.data[0]).slice(0, 10)}：<b>${p.data[1]}%</b>${tag}`;
++      }).join("<br>"),
++    },
++    xAxis: { ...base.xAxis, axisLabel: { ...base.xAxis.axisLabel,
++      formatter: (v) => { const d = new Date(v); return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}`; } } },
++    yAxis: { ...base.yAxis, name: "风险概率 %", min: 0, max: 100 },
++    series: [
++      {
++        name: `历史 · ${H_LABEL[h] || h}风险（回溯）`, type: "line",
++        smooth: 0.2, symbolSize: 9,
++        lineStyle: { width: 2, color: token("--ink") },
++        itemStyle: { color: (p) => tierColor(histData[p.dataIndex]?.[2]) },
++        data: histData,
++        markLine: {
++          silent: true, symbol: "none",
++          lineStyle: { color: token("--ink-3"), type: "dotted" },
++          label: { formatter: "最近检查", color: token("--ink-3"), fontSize: 10 },
++          data: [{ xAxis: last.at }],
++        },
++      },
++      {
++        name: "未来累计风险预测", type: "line",
++        smooth: 0.2, symbolSize: 8, symbol: "emptyCircle",
++        lineStyle: { width: 2, color: token("--ink-3"), type: "dashed" },
++        itemStyle: { color: token("--ink-3") },
++        data: futureData,
++      },
++    ],
++  }, true);
++}
++
++$$("#riskHorizonChips .chip").forEach((b) => b.addEventListener("click", () => {
++  state.riskHorizon = b.dataset.h;
++  $$("#riskHorizonChips .chip").forEach((x) => x.classList.toggle("on", x === b));
++  drawRiskTimeline();
++}));
++
++/** 检查时间轴条：从初始点到终止点，把每一次检查按真实日期标在轴上。 */
++function renderExamStrip(dates) {
++  const el = $("#examStrip");
++  if (!dates || dates.length < 2) { el.hidden = true; el.innerHTML = ""; return; }
++  el.hidden = false;
++  const t0 = new Date(dates[0]).getTime(), t1 = new Date(dates[dates.length - 1]).getTime();
++  const span = Math.max(t1 - t0, 1);
++  const dot = (d) => d.replaceAll("-", ".");
++  el.innerHTML = `
++    <span class="es-lab">${dot(dates[0])}</span>
++    <span class="es-track">${dates.map((d, i) => {
++      const x = ((new Date(d).getTime() - t0) / span) * 100;
++      const cur = i === dates.length - 1;
++      return `<i class="${cur ? "cur" : ""}" style="left:${x}%" title="${dot(d)}"></i>`;
++    }).join("")}</span>
++    <span class="es-lab">${dot(dates[dates.length - 1])}</span>
++    <span class="muted" style="margin-left:8px;white-space:nowrap">${dates.length} 次检查</span>`;
++}
++
++$$("#seriesRangeChips .chip").forEach((b) => b.addEventListener("click", () => {
++  state.seriesRange = b.dataset.range;
++  $$("#seriesRangeChips .chip").forEach((x) => x.classList.toggle("on", x === b));
++  const t = state.trend;
++  if (t && t.series.length) drawSeries(t.series[+$("#seriesSel").value || 0]);
++}));
++
++/** AI 分析置顶：最需要关注的 3 个问题（改动 7）。内容来自模型/规则结果，
++    按"为什么重要 → 历史变化 → 当前风险 → 建议关注"组织，AI 不创造概率。 */
++function renderAITop3(t) {
++  const box = $("#aiTop3");
++  const ivs = (t.interventions || []).filter((x) => x.level !== "平稳维持");
++  const order = { "重点关注": 0, "积极改善": 1 };
++  ivs.sort((a, b) => (order[a.level] ?? 9) - (order[b.level] ?? 9));
++  const top = ivs.slice(0, 3);
++  if (!top.length) { box.innerHTML = ""; return; }
++  const compByName = {};
++  (t.comparisons || []).forEach((c) => { compByName[c.name_cn] = c; });
++  box.innerHTML = `<div class="top3-title">最需要关注的 ${top.length} 个问题</div>` +
++    top.map((iv, i) => {
++      const hist = iv.target_indicators.map((ti) => {
++        const nm = ti.split(" (")[0];
++        const c = compByName[nm];
++        if (!c) return null;
++        return c.is_real_change
++          ? `${nm}较上次${c.direction}${c.worsened ? "且加重" : ""}`
++          : `${nm}较上次平稳`;
++      }).filter(Boolean).slice(0, 3);
++      return `<div class="top3-item">
++        <div class="top3-head"><span class="top3-n">${i + 1}</span><b>${esc(iv.system)}</b>
++          <span class="tag ${iv.level === "重点关注" ? "t3" : "t2"}">${esc(iv.level)}</span></div>
++        <div class="top3-body">
++          <p><b>为什么重要：</b>${iv.target_indicators.slice(0, 4).map(esc).join("、")}</p>
++          <p><b>历史变化：</b>${hist.length ? hist.map(esc).join("；") : "累计两次以上记录后可见变化方向"}</p>
++          <p><b>当前风险：</b>该系统当前${iv.level === "重点关注" ? "存在恶化中的异常，属于优先处理项" : "存在异常但未见加重，建议积极改善"}</p>
++          <p><b>建议关注：</b>${esc(iv.followup_cycle)}</p>
++        </div>
++      </div>`;
++    }).join("");
++}
++
+ function renderAIAdvisor(t) {
+   const box = $("#trendInterventionBox");
+   const ai = t.ai_analysis;
+@@ -692,6 +1225,7 @@ function renderAIAdvisor(t) {
+     return;
+   }
+ 
++  // 改动 7：结论排序在上（renderAITop3），长文本一律进展开区域
+   let html = "";
+ 
+   // 1. 若有 LLM 自由生成的叙述文本，优先展示
+@@ -793,11 +1327,23 @@ function renderAIAdvisor(t) {
+     `;
+   }
+ 
+-  box.innerHTML = html;
++  box.innerHTML = html
++    ? `<details class="fold ai-fold"><summary>展开完整专业分析（机制剖析 / 膳食与运动处方 / 随访日程）</summary>
++       <div style="margin-top:12px">${html}</div></details>`
++    : "";
+ }
+ 
+ function drawSeries(s) {
+   if (!s) return;
++  // 时间范围筛选（全部/近1年/近3年/近5年）——从最近一次检查日期倒推
++  let points = s.points;
++  if (state.seriesRange !== "all" && points.length) {
++    const lastMs = new Date(points[points.length - 1].at).getTime();
++    const cutoff = lastMs - (+state.seriesRange) * 365.25 * 86400000;
++    const filtered = points.filter((p) => new Date(p.at).getTime() >= cutoff);
++    if (filtered.length >= 1) points = filtered;
++  }
++  s = { ...s, points };
+   const ref = state.refMap[s.code] || {};
+   const markArea = (ref.low != null || ref.high != null) ? {
+     silent: true,
+@@ -809,6 +1355,8 @@ function drawSeries(s) {
+   const base = baseOption();
+   chart("seriesChart").setOption({
+     ...base,
++    xAxis: { ...base.xAxis, axisLabel: { ...base.xAxis.axisLabel,
++      formatter: (v) => { const d = new Date(v); return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}`; } } },
+     yAxis: { ...base.yAxis, name: s.unit, scale: true },
+     series: [{
+       name: s.name_cn, type: "line", smooth: 0.25, symbolSize: 9,
+diff --git a/app/static/index.html b/app/static/index.html
+index fae0895..94bca53 100644
+--- a/app/static/index.html
++++ b/app/static/index.html
+@@ -6,7 +6,7 @@
+ <meta name="color-scheme" content="light dark">
+ <meta name="theme-color" content="#0f1a17">
+ <title>病情预测平台</title>
+-<link rel="stylesheet" href="/app.css?v=2.6">
++<link rel="stylesheet" href="/app.css?v=3.0">
+ <script src="/vendor/echarts.min.js"></script>
+ </head>
+ <body>
+@@ -88,43 +88,60 @@
+     <!-- ==================== 评估 ==================== -->
+     <section class="page" id="page-work">
+       <p class="eyebrow">Assessment</p>
+-      <h1 class="title">风险评估</h1>
+-      <p class="lede">粘贴或拍照化验单 → 智能解析校验 → 多维特征提取 → 生成 1/3/5 年风险预测。</p>
++      <h1 class="title">纵向风险评估</h1>
++      <p class="lede">批量导入历史报告 → 建立真实检查日期时间轴 → 纵向风险预测 → 后续健康跟踪。</p>
+ 
+-      <div class="steps" id="stepBar">
++      <div class="steps four" id="stepBar">
+         <button class="step" data-step="ingest" data-state="now">
+-          <span class="n">STEP 1</span><span class="t">录入化验单</span></button>
++          <span class="n">STEP 1</span><span class="t">导入历史资料</span></button>
++        <button class="step" data-step="timeline" data-state="idle">
++          <span class="n">STEP 2</span><span class="t">建立健康时间轴</span></button>
+         <button class="step" data-step="predict" data-state="idle">
+-          <span class="n">STEP 2</span><span class="t">运行预测</span></button>
++          <span class="n">STEP 3</span><span class="t">风险预测</span></button>
+         <button class="step" data-step="followup" data-state="idle">
+-          <span class="n">STEP 3</span><span class="t">随访回流</span></button>
++          <span class="n">STEP 4</span><span class="t">健康跟踪</span></button>
+       </div>
+ 
+-      <!-- STEP 1 -->
++      <!-- STEP 1：导入历史资料（支持批量） -->
+       <div class="card" id="sec-ingest">
+         <header>
+-          <h2>录入化验单</h2>
+-          <span class="note">含姓名/证件/手机号的文本会被拒收</span>
++          <h2>导入历史检查资料</h2>
++          <span class="note">可一次选择多张图片；含姓名/证件/手机号的文本会被拒收</span>
+         </header>
+         <div class="field-row">
+-          <div style="flex:1 1 160px">
+-            <label class="fld" for="repDate">检验日期</label>
+-            <input type="date" id="repDate">
+-          </div>
+-          <div class="keep" style="display:flex;gap:8px">
+-            <input type="file" id="repImage" accept="image/*" hidden>
+-            <button class="btn sm" id="btnOCR" title="拍照/上传化验单图片，自动识别并入库">
++          <div class="keep" style="display:flex;gap:8px;flex-wrap:wrap">
++            <input type="file" id="repImage" accept="image/*" multiple hidden>
++            <button class="btn sm" id="btnOCR" title="批量选择多份不同日期的化验单图片，逐份识别">
+               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-2px;margin-right:4px">
+                 <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+               </svg>
+-              拍照/上传化验单
++              批量上传化验单（可多选）
+             </button>
+             <button class="btn ghost sm" id="btnSample">填充示例</button>
+           </div>
+         </div>
++        <p class="muted" style="margin:10px 0 0">
++          上传后系统自动识别<b>检查日期</b>，你只需确认或修改；识别不出时才需要手动填写。
++        </p>
++
++        <div id="pendingWrap" hidden>
++          <div class="divider"></div>
++          <div class="t1line" style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
++            <b>待确认入库</b>
++            <span class="muted" id="pendingCount"></span>
++            <button class="btn sm push" id="btnConfirmAll">全部确认入库</button>
++          </div>
++          <div id="pendingList"></div>
++        </div>
+ 
+         <details style="margin-top:12px" id="detailsManualText">
+-          <summary style="font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;margin-bottom:8px">或展开手动粘贴文本</summary>
++          <summary style="font-size:12.5px;color:var(--ink-3);cursor:pointer;user-select:none;margin-bottom:8px">或展开手动粘贴文本</summary>
++          <div class="field-row" style="margin-bottom:8px">
++            <div style="flex:1 1 160px">
++              <label class="fld" for="repDate">该报告的检查日期</label>
++              <input type="date" id="repDate">
++            </div>
++          </div>
+           <div class="field">
+             <textarea id="repText" rows="6" spellcheck="false"
+               placeholder="ALT 62 U/L 9-50&#10;GLU 7.2 mmol/L 3.9-6.1&#10;TG 2.9 mmol/L 0.4-1.7"></textarea>
+@@ -141,6 +158,27 @@
+         </div>
+       </div>
+ 
++      <!-- 历史检查资料：逐份可见、可管理（不会互相覆盖） -->
++      <div class="card" id="sec-reports">
++        <header>
++          <h2>我的历史检查资料</h2>
++          <span class="note">每份报告独立入库，不会互相覆盖</span>
++        </header>
++        <div class="rep-summary" id="reportsSummary">还没有上传过报告</div>
++        <div id="reportTable"></div>
++      </div>
++
++      <!-- STEP 2：数据确认 · 健康时间轴 -->
++      <div class="card" id="sec-timeline">
++        <header>
++          <h2>数据确认 · 健康时间轴</h2>
++          <span class="note">按真实检查日期统计，不按上传时间</span>
++        </header>
++        <div id="timelineBox">
++          <div class="empty"><b>还没有可确认的数据</b>先在上面导入至少一份历史报告</div>
++        </div>
++      </div>
++
+       <div class="card" id="sec-records">
+         <header>
+           <h2>历史化验记录</h2>
+@@ -149,32 +187,56 @@
+         <div class="scroller" id="recordList"></div>
+       </div>
+ 
+-      <!-- STEP 2 -->
++      <!-- STEP 3：纵向风险预测 -->
+       <div class="card" id="sec-predict">
+         <header>
+-          <h2>风险预测</h2>
+-          <span class="note">概率由专业统计模型计算，非 AI 对话生成</span>
++          <h2>纵向风险预测</h2>
++          <span class="note">概率由统计模型基于全部历史数据计算，非 AI 对话生成</span>
+         </header>
+-        <button class="btn block" id="btnPredict">运行预测</button>
++
++        <div class="concern">
++          <div class="fld" style="margin-bottom:8px">这次你最想了解什么？（不影响后台全身扫描，只决定先回答什么）</div>
++          <div class="chips" id="concernChips">
++            <button class="chip" data-concern="liver">肝脏</button>
++            <button class="chip" data-concern="cardio">心血管</button>
++            <button class="chip" data-concern="glucose">血糖代谢</button>
++            <button class="chip" data-concern="renal">肾脏</button>
++            <button class="chip" data-concern="other">其他</button>
++            <button class="chip on" data-concern="all">不知道，请全面分析</button>
++          </div>
++        </div>
++
++        <button class="btn block" id="btnPredict" style="margin-top:14px">运行纵向风险分析</button>
+         <span class="muted" id="predStat"></span>
+ 
+         <div id="predictOut" hidden>
++          <div class="demo-banner" id="demoBanner" hidden></div>
++
+           <div class="divider"></div>
++          <h3 class="blocktitle">① 本次健康风险总览</h3>
++          <div class="concern-answer" id="concernAnswerBox" hidden></div>
++          <div id="riskOverviewBox"></div>
++
++          <div class="divider"></div>
++          <h3 class="blocktitle">② 未来健康风险预测</h3>
++          <p class="endpoint-line" id="endpointLabel"></p>
+           <div class="hero">
+             <div class="horizon" id="heroHorizon">3Y</div>
+             <div class="prob" id="heroProb">—</div>
+             <div class="tierline" id="heroTier"></div>
+           </div>
+           <div class="tierscale" id="tierScale"></div>
+-          <div class="horizon-mini" id="horizonMini"></div>
++          <div class="horizon-mini clickable" id="horizonMini"></div>
++          <p class="judge" id="modelJudge"></p>
++          <p class="muted" id="predBasis"></p>
+           <p class="muted" id="servedBy" style="margin:12px 0 0"></p>
+         </div>
+       </div>
+ 
+       <div class="card" id="sec-factors" hidden>
+         <header>
+-          <h2>风险归因</h2>
+-          <span class="note">每次预测实时分析各指标贡献度</span>
++          <h2>③ 为什么 · 风险归因</h2>
++          <span class="note" id="factorHorizonNote">每次预测实时分析各指标贡献度</span>
+         </header>
+         <div class="factors" id="factorList"></div>
+         <div class="legend">
+@@ -195,33 +257,41 @@
+         <div id="referralBox"></div>
+       </div>
+ 
+-      <!-- STEP 3 -->
++      <!-- STEP 4：后续健康跟踪（普通用户人话版） -->
+       <div class="card" id="sec-followup">
+         <header>
+-          <h2>随访回流</h2>
+-          <span class="note">需用户授权后方可保存</span>
++          <h2>后续健康跟踪</h2>
++          <span class="note">上传新报告后，系统自动与上次比较</span>
+         </header>
+-        <div class="field">
+-          <label class="fld" for="fbTrace">回填哪一次预测</label>
+-          <select id="fbTrace"></select>
++        <div class="autocompare" id="autoCompareBox" hidden></div>
++        <div id="followupPlain">
++          <div class="empty"><b>先完成一次风险预测</b>之后这里会给出建议复查时间与项目</div>
+         </div>
+-        <div class="field-row">
+-          <div>
+-            <label class="fld" for="fbEvent">随访结局</label>
+-            <select id="fbEvent">
+-              <option value="0">随访期内未发生事件</option>
+-              <option value="1">随访期内发生了事件</option>
+-            </select>
++
++        <details class="fold" style="margin-top:14px">
++          <summary>科研随访（专业字段，仅研究人员使用）</summary>
++          <div class="field" style="margin-top:12px">
++            <label class="fld" for="fbTrace">回填哪一次预测</label>
++            <select id="fbTrace"></select>
+           </div>
+-          <div>
+-            <label class="fld" for="fbDays">距预测天数</label>
+-            <input type="number" id="fbDays" value="180" min="0">
++          <div class="field-row">
++            <div>
++              <label class="fld" for="fbEvent">随访结局</label>
++              <select id="fbEvent">
++                <option value="0">随访期内未发生事件</option>
++                <option value="1">随访期内发生了事件</option>
++              </select>
++            </div>
++            <div>
++              <label class="fld" for="fbDays">距预测天数</label>
++              <input type="number" id="fbDays" value="180" min="0">
++            </div>
+           </div>
+-        </div>
+-        <label class="check" style="margin:12px 0 14px">
+-          <input type="checkbox" id="fbConsent"> 用户已授权保存本条随访反馈
+-        </label>
+-        <button class="btn" id="btnFeedback">提交回流</button>
++          <label class="check" style="margin:12px 0 14px">
++            <input type="checkbox" id="fbConsent"> 用户已授权保存本条随访反馈
++          </label>
++          <button class="btn" id="btnFeedback">提交回流</button>
++        </details>
+       </div>
+ 
+       <div class="disclaimer" id="disclaimerBar"></div>
+@@ -231,24 +301,31 @@
+     <section class="page" id="page-trend">
+       <p class="eyebrow">Trajectory</p>
+       <h1 class="title">趋势追踪</h1>
+-      <p class="lede">单次指标不准，趋势才准。风险走势读的是审计历史，不是事后重算。</p>
++      <p class="lede">单次指标不准，趋势才准。本页所有曲线横轴都是<b>真实检查日期</b>；「模型当时的判断」（按预测时间的审计走势）在管理台复盘。</p>
+ 
+       <div class="card">
+         <header>
+-          <h2>风险走势</h2>
+-          <span class="note">基于历次预测记录</span>
++          <h2>风险走势（按检查日期）</h2>
++          <span class="note">历史用实线 · 未来预测用虚线，预测≠确定结果</span>
+         </header>
++        <div class="chips" id="riskHorizonChips" style="margin-bottom:8px">
++          <button class="chip" data-h="1y">1 年风险</button>
++          <button class="chip on" data-h="3y">3 年风险</button>
++          <button class="chip" data-h="5y">5 年风险</button>
++        </div>
+         <div class="chart tall" id="riskChart"></div>
++        <p class="muted" id="riskBasisNote" style="margin:8px 0 0"></p>
+         <div class="empty" id="riskEmpty" hidden>
+-          <b>该患者暂无历史预测</b>回到「评估」跑一次预测后，这里会出现走势
++          <b>还画不出走势</b>至少需要一份已入库的历史报告
+         </div>
+       </div>
+ 
+       <div class="card">
+         <header>
+           <h2>本次 vs 上次</h2>
+-          <span class="note">超过临床变化阈值才判为真实变化</span>
++          <span class="note" id="compareDates">超过临床变化阈值才判为真实变化</span>
+         </header>
++        <div class="exam-strip" id="examStrip" hidden></div>
+         <div id="compareList"></div>
+         <div class="empty" id="compareEmpty" hidden>
+           <b>还差一次记录</b>同一指标累计两次以上才能做对比
+@@ -256,7 +333,16 @@
+       </div>
+ 
+       <div class="card">
+-        <header><h2>指标近 3 次曲线</h2></header>
++        <header>
++          <h2>指标历史趋势</h2>
++          <span class="note">显示该指标全部真实检查时间点</span>
++        </header>
++        <div class="chips" id="seriesRangeChips" style="margin-bottom:8px">
++          <button class="chip on" data-range="all">全部</button>
++          <button class="chip" data-range="1">近 1 年</button>
++          <button class="chip" data-range="3">近 3 年</button>
++          <button class="chip" data-range="5">近 5 年</button>
++        </div>
+         <div class="field">
+           <label class="fld" for="seriesSel">选择指标</label>
+           <select id="seriesSel"></select>
+@@ -274,9 +360,10 @@
+ 
+       <div class="card" id="sec-trend-interventions">
+         <header>
+-          <h2>🤖 AI 大模型临床深度解读与干预方案</h2>
+-          <span class="note">整合时序恶化机制剖析、个性化膳食处方、分级运动与专科随访日程</span>
++          <h2>🤖 AI 深度分析</h2>
++          <span class="note">AI 只解释模型与规则的结果，不自行创造风险概率</span>
+         </header>
++        <div id="aiTop3"></div>
+         <div id="aiAdvisorContainer">
+           <div class="ai-status-bar">
+             <span class="ai-badge-pulse"><i class="pulse-dot"></i> <span id="aiModelSource">AI 临床大模型引擎已就绪</span></span>
+@@ -371,7 +458,16 @@
+   </div>
+ </dialog>
+ 
++<dialog id="dlgReport">
++  <h2>报告原文</h2>
++  <p class="muted" id="dlgReportMeta" style="margin:0 0 12px"></p>
++  <pre class="rawtext" id="dlgReportText"></pre>
++  <p class="muted" style="margin:10px 0 0;font-size:12px">
++    为保护隐私（规范 1.2），系统不保存原始图片，仅保留已脱敏校验的识别文本。</p>
++  <div class="actions"><button class="btn" id="dlgReportClose">关闭</button></div>
++</dialog>
++
+ <div id="toast" role="status" aria-live="polite"></div>
+-<script src="/app.js?v=2.6"></script>
++<script src="/app.js?v=3.0"></script>
+ </body>
+ </html>
+diff --git a/tests/test_reports_db.py b/tests/test_reports_db.py
+new file mode 100644
+index 0000000..c757c07
+--- /dev/null
++++ b/tests/test_reports_db.py
+@@ -0,0 +1,167 @@
++# -*- coding: utf-8 -*-
++"""
++V3 改版回归测试 · 报告管理 DB 层 + OCR 报告日期识别。
++
++对应技术核查：
++  核查项 1（多份报告独立保存、无覆盖）      → TestReportsDB.test_eight_reports_independent
++  核查项 3（时间字段一致性：改日期必须联动）→ TestReportsDB.test_update_date_syncs_lab_records
++  改动 1（逐份 删除 / 重新识别）            → test_delete_cascades / test_reparse_clear_and_counts
++  改动 2（OCR 自动识别检查日期）            → TestDetectReportDate.*
++
++依赖说明：仅用标准库（sqlite3 / unittest / ast），不需要 fastapi/pytest —— 
++_detect_report_date 定义在 app/server.py（顶部 import fastapi），无法在无依赖
++环境整体导入，故用 ast 从源码中【提取生产代码本体】执行后测试，保证测的
++就是线上那份实现而不是复制品。
++"""
++from __future__ import annotations
++
++import ast
++import sys
++import tempfile
++import unittest
++from datetime import date, datetime, timezone
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++
++from app.db import AppDB  # noqa: E402
++
++
++# ---------------------------------------------------------------- 工具
++
++def _load_detect_fn():
++    """从 app/server.py 源码中提取 _DATE_LINE_KEYWORDS 与 _detect_report_date。"""
++    src = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
++    tree = ast.parse(src)
++    wanted: list[ast.stmt] = []
++    for node in tree.body:
++        if isinstance(node, ast.Assign) and any(
++            isinstance(t, ast.Name) and t.id == "_DATE_LINE_KEYWORDS"
++            for t in node.targets
++        ):
++            wanted.append(node)
++        if isinstance(node, ast.FunctionDef) and node.name == "_detect_report_date":
++            wanted.append(node)
++    assert len(wanted) == 2, "server.py 中未找到日期识别实现"
++    mod = ast.Module(body=wanted, type_ignores=[])
++    ns = {"datetime": datetime, "timezone": timezone, "date": date}
++    exec(compile(mod, filename="<server.py:extract>", mode="exec"), ns)
++    return ns["_detect_report_date"]
++
++
++def _mk_db() -> AppDB:
++    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
++    tmp.close()
++    db = AppDB(tmp.name)
++    db.create_patient("P001", sex="F", birth_date="1962-05-01")
++    return db
++
++
++def _ingest(db: AppDB, measured_at: str, codes: list[str]) -> int:
++    rid = db.insert_report(
++        "P001", raw_text=f"报告 {measured_at}", measured_at=measured_at,
++        n_ingested=len(codes), n_review=0, n_unmatched=0,
++    )
++    db.insert_lab_records([
++        {"patient_id": "P001", "indicator_code": c, "value": 1.0 + i,
++         "unit": "U/L", "measured_at": measured_at, "status": "ok",
++         "report_id": rid}
++        for i, c in enumerate(codes)
++    ])
++    return rid
++
++
++# ---------------------------------------------------------------- DB 层
++
++class TestReportsDB(unittest.TestCase):
++    def setUp(self):
++        self.db = _mk_db()
++
++    def tearDown(self):
++        self.db.close()
++
++    def test_eight_reports_independent(self):
++        """核查项 1：同一天连传 8 份 → 8 行 reports、记录互不覆盖。"""
++        rids = [_ingest(self.db, f"2025-0{m}-10", ["ALT", "AST"]) for m in range(1, 9)]
++        self.assertEqual(len(set(rids)), 8)
++        reps = self.db.list_reports("P001")
++        self.assertEqual(len(reps), 8)
++        self.assertTrue(all(r["n_stored"] == 2 for r in reps))
++        # 升序按真实检查日期
++        self.assertEqual([r["measured_at"] for r in reps],
++                         sorted(r["measured_at"] for r in reps))
++        self.assertEqual(len(self.db.records_for_patient("P001")), 16)
++
++    def test_update_date_syncs_lab_records(self):
++        """核查项 3：改报告日期必须联动其名下全部 lab_records.measured_at。"""
++        rid = _ingest(self.db, "2025-03-10", ["ALT", "AST", "GGT"])
++        _ingest(self.db, "2025-06-10", ["ALT"])  # 别的报告不受影响
++        self.db.update_report_date(rid, "2025-04-01")
++        self.assertEqual(self.db.get_report(rid)["measured_at"], "2025-04-01")
++        dates = {r["measured_at"] for r in self.db.records_for_patient("P001")}
++        self.assertEqual(dates, {"2025-04-01", "2025-06-10"})
++
++    def test_delete_cascades(self):
++        rid1 = _ingest(self.db, "2025-03-10", ["ALT", "AST"])
++        rid2 = _ingest(self.db, "2025-06-10", ["ALT"])
++        n = self.db.delete_report(rid1)
++        self.assertEqual(n, 2)
++        self.assertIsNone(self.db.get_report(rid1))
++        self.assertEqual([r["id"] for r in self.db.list_reports("P001")], [rid2])
++        self.assertEqual(len(self.db.records_for_patient("P001")), 1)
++
++    def test_reparse_clear_and_counts(self):
++        """重新识别 = 清空旧记录（报告行保留）→ 重灌 → 更新计数。"""
++        rid = _ingest(self.db, "2025-03-10", ["ALT", "AST"])
++        self.assertEqual(self.db.clear_report_records(rid), 2)
++        self.assertIsNotNone(self.db.get_report(rid))          # 报告行还在
++        self.assertEqual(self.db.list_reports("P001")[0]["n_stored"], 0)
++        self.db.insert_lab_records([{
++            "patient_id": "P001", "indicator_code": "ALT", "value": 88.0,
++            "unit": "U/L", "measured_at": "2025-03-10", "status": "ok",
++            "report_id": rid}])
++        self.db.update_report_counts(rid, n_ingested=1, n_review=0, n_unmatched=1)
++        rep = self.db.list_reports("P001")[0]
++        self.assertEqual((rep["n_ingested"], rep["n_unmatched"], rep["n_stored"]),
++                         (1, 1, 1))
++
++
++# ---------------------------------------------------------------- OCR 日期识别
++
++class TestDetectReportDate(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.detect = staticmethod(_load_detect_fn())
++
++    def test_keyword_line_wins(self):
++        d, src = self.detect("姓名:张三 出生日期:1962-05-01\n采样时间：2025年10月07日 08:31")
++        self.assertEqual(d, "2025-10-07")
++        self.assertIn("采样", src)
++
++    def test_keyword_priority_over_plain_hits(self):
++        # 报告行日期更晚，但"采样"优先级高于"报告"
++        d, _ = self.detect("采样日期 2025/10/07\n报告日期 2025/10/09")
++        self.assertEqual(d, "2025-10-07")
++
++    def test_dotted_and_cn_formats(self):
++        self.assertEqual(self.detect("检验日期 2025.1.7")[0], "2025-01-07")
++        self.assertEqual(self.detect("送检：2025-10-07")[0], "2025-10-07")
++
++    def test_fallback_max_any_date(self):
++        d, src = self.detect("2024-12-01 参考\n体检 2025-02-03")
++        self.assertEqual(d, "2025-02-03")
++        self.assertIn("文本", src)
++
++    def test_future_and_invalid_rejected(self):
++        self.assertEqual(self.detect("采样时间 2031-01-01")[0], None)   # 未来
++        self.assertEqual(self.detect("采样时间 2025-02-30")[0], None)   # 非法
++        self.assertEqual(self.detect("")[0], None)
++
++    def test_birthdate_not_picked(self):
++        # 只有出生日期（<2000）→ 识别不出，交给用户填
++        self.assertEqual(self.detect("出生日期 1962-05-01")[0], None)
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git "a/\344\275\277\347\224\250\346\214\207\345\215\227.md" "b/\344\275\277\347\224\250\346\214\207\345\215\227.md"
+index 5664b2f..74a7dcd 100644
+--- "a/\344\275\277\347\224\250\346\214\207\345\215\227.md"
++++ "b/\344\275\277\347\224\250\346\214\207\345\215\227.md"
+@@ -51,26 +51,42 @@ python run_app.py --port 8000
+ 
+ ---
+ 
+-### 第 2 步：「评估」页 — 录入 → 预测 → 回流
++### 第 2 步：「评估」页 — 导入历史资料 → 建立健康时间轴 → 风险预测 → 健康跟踪
+ 
+-点左侧 **「评估」** 导航按钮。页面顶部有三步进度条：
++点左侧 **「评估」** 导航按钮。页面顶部有四步进度条：
+ 
+-#### STEP 1：录入化验单
++#### STEP 1：导入历史检查资料（支持批量）
+ 
+-1. 选择 **检验日期**
+-2. 在文本框里 **粘贴化验单文本**（OCR 或手打都行），格式类似：
++1. 点 **「批量上传化验单（可多选）」**，一次选中多份不同日期的报告图片
++2. 系统逐份 OCR，并**自动识别每份报告的检查日期**；每份出现一张「待确认」卡：
++   - 识别到日期 → 显示「已识别检查日期」，确认或改一下即可
++   - 识别不到 → 标黄提示，手动填一次
++3. 逐份点「确认入库」，或一键「全部确认入库」
++4. 「我的历史检查资料」卡片会显示累计状态：
++   **已上传 N 份报告｜起—止年月｜识别 X 条指标**，并逐份列出
++   检查日期 / 识别结果 / 入库状态，支持 **查看原文 / 修改日期 / 删除 / 重新识别**
++   （每份报告独立入库，后传的不会覆盖先传的）
++
++也可以展开「手动粘贴文本」，为该份报告填写检查日期后粘贴，格式类似：
+    ```
+    丙氨酸氨基转移酶 ALT  62  U/L  9-50  ↑
+    葡萄糖(GLU) 7.2 mmol/L 参考值:3.9-6.1 H
+    甘油三酯 TG 2.9 mmol/L 0.4-1.7 ↑
+    ```
+    > 💡 点「**填充示例**」按钮可自动填入一份完整的示例化验单，方便试用
+-3. 点 **「解析并入库」** → 系统会：
++然后点 **「手动解析并入库」** → 系统会：
+    - 自动识别指标名称（支持中文全名、英文缩写、各种别名）
+    - 统一单位（mg/L↔g/L 等自动换算）
+    - 拦截超生理极限的异常值
+    - 拦截含 PII 的文本（手机号等直接 422 拒绝）
+-4. 解析完成后显示：入库条数、需人工审核数、无法识别数
++解析完成后显示：入库条数、需人工审核数、无法识别数
++
++#### STEP 2：数据确认 · 健康时间轴
++
++全部报告入库后，「数据确认 · 健康时间轴」卡片会给出：
++- **数据跨度**（如 1年7个月）、**检查报告数**、**有效记录数**、**可连续比较指标数**
++- 各系统的时间点覆盖（血脂 8 个时间点 ✓ / 血糖 仅 2 个时间点 ⚠ …）
++- 满足条件时提示「数据已具备纵向趋势分析条件」，点「开始风险预测」进入下一步
+ 
+ 下方「历史化验记录」卡片会列出该患者所有入库的化验值，每条显示：
+ - 指标名（中文） + 代码
+@@ -78,26 +94,38 @@ python run_app.py --port 8000
+ - **参考区间带**（根据该患者的年龄性别分层的真实参考区间）
+ - **分级颜色**（与模型特征同口径，不是前端随便判的）
+ 
+-#### STEP 2：运行预测
++#### STEP 3：纵向风险预测
+ 
+-1. 点 **「运行预测」** 按钮
++1. 先选 **「这次你最想了解什么？」**（肝脏/心血管/血糖代谢/肾脏/其他/全面分析）——
++   只决定结果页先回答什么，后台仍然全身扫描
++2. 点 **「运行纵向风险分析」** 按钮
+ 2. 系统自动执行完整特征管线：
+    - 基础特征（年龄/性别/BMI/既往史/家族史）
+    - 偏离度 + 分级特征
+    - 临床比值特征（AST/ALT 等）
+    - 时序特征（如有多次记录）
+    - 干扰因子（如有用药记录）
+-3. 输出结果：
+-   - **大字概率**：3 年风险概率 + 四级分层（低危/中危/高危/极高危）
++3. 输出结果（按新版信息层级）：
++   - **① 本次健康风险总览**：首要关注 / 第二关注 / 第三关注 / 目前相对稳定，
++     每一项都写明为什么排在这个位置（涉及指标、分级、较上次的变化方向）；
++     若选择了关注点，第一行先回答该关注点
++   - **② 未来健康风险预测**：明确写出**预测目标**与
++     **预测依据**（起止年月、N 份报告、可比较指标数）；未来 1/3/5 年做成
++     **可点击时间窗口**，点击切换该窗口的概率、分层与归因；
++     演示模型会有醒目的「演示模型/非临床验证」横幅
++   - **大字概率**：所选时间窗口的概率 + 四级分层（低危/中危/高危/极高危）
+    - **分层刻度尺**：可视化概率在分层中的位置（切点来自模型验证集，不是前端编的）
+    - **三个时程**：1 年 / 3 年 / 5 年的概率一览
+    - **风险归因**（SHAP）：Top 因子的贡献度条形图，区分"推高风险"和"拉低风险"，"未检查"的因子用虚线斜纹单独标注
+    - **就医建议**：根据异常指标推荐科室和检查项目
+    - **免责声明**：常驻底部，不可折叠
+ 
+-#### STEP 3：随访回流
++#### STEP 4：后续健康跟踪
++
++预测完成后，卡片用自然语言给出：**上次评估日期、建议复查时间、需要复查的项目**。
++之后上传新报告，系统会**自动与上次比较**并给出 **改善 / 稳定 / 升高** 结论。
+ 
+-预测完成后，如果后续得到了真实随访结果：
++科研人员如需回填真实随访结局，展开「科研随访（专业字段）」：
+ 
+ 1. 在下拉框选择 **要回填的那次预测**（按 trace_id 标识）
+ 2. 选择 **随访结局**：未发生事件 / 发生了事件
+@@ -145,7 +173,12 @@ python run_app.py --port 8000
+ | `/api/patients/{pid}/records` | GET | 化验记录（附带年龄性别分层的参考区间和分级） |
+ | `/api/patients/{pid}/medications` | GET/POST | 用药记录（干扰因子数据入口） |
+ | `/api/patients/{pid}/medications/{id}` | DELETE | 删除用药 |
+-| `/api/reports/parse` | POST | 化验单文本 → 解析入库 |
++| `/api/reports/parse` | POST | 化验单文本 → 解析入库（每份报告独立保存） |
++| `/api/patients/{pid}/reports` | GET | 历史检查资料清单 + 累计状态 |
++| `/api/reports/{id}` | GET/PATCH/DELETE | 查看原文 / 修改检查日期（联动记录） / 删除 |
++| `/api/reports/{id}/reparse` | POST | 重新识别（重跑解析管线） |
++| `/api/patients/{pid}/timeline` | GET | 健康时间轴数据确认（跨度/报告数/可比较指标/系统覆盖） |
++| `/api/patients/{pid}/risk-timeline` | GET | 按真实检查日期回溯的历史风险轨迹（派生视图，不写审计） |
+ | `/api/predict` | POST | 运行预测（支持 non_fasting/pregnancy 等采血登记） |
+ | `/api/patients/{pid}/trend` | GET | 趋势报告 |
+ | `/api/feedback` | POST | 随访回流（需授权） |
+diff --git "a/\346\224\271\347\211\210\345\256\236\346\226\275\350\257\264\346\230\216_v3.md" "b/\346\224\271\347\211\210\345\256\236\346\226\275\350\257\264\346\230\216_v3.md"
+new file mode 100644
+index 0000000..615980b
+--- /dev/null
++++ "b/\346\224\271\347\211\210\345\256\236\346\226\275\350\257\264\346\230\216_v3.md"
+@@ -0,0 +1,74 @@
++# SOULHEALTH 风险预测 Demo · 技术核查结论与 V3 改版实施说明
++
++对应需求文档：《SOULHEALTH 风险预测 Demo 技术核查与产品改版需求 V1.0》
++实施范围：`app/server.py`、`app/db.py`、`app/static/*`（前端三件套）、`使用指南.md`
++核心库 `src/drp/*` 未改动一行 —— 本次问题全部出在应用层与展示层，不在模型层。
++
++---
++
++## 一、技术核查表（已填写）
++
++| 核查项 | 结论 | 实现方式 / 证据 |
++| --- | --- | --- |
++| 1. 多份报告是否独立保存 | **已做到**（原架构即满足） | `reports` 表逐份 INSERT，`lab_records` 逐条带 `report_id` 外键关联；不存在任何 UPSERT/覆盖路径。8 份连传 = 8 行 reports + 各自的指标记录。问题在于**界面从未把这件事展示出来**（只提示"已录入 1 条"），本次已补（见改动 1）。 |
++| 2. 预测是否读取全部历史数据 | **已做到**（原架构即满足） | `/api/predict` → `records_for_patient()` 取该患者**全部**历史记录 → `FeaturePipeline.transform`，其中 `temporal.py` 对每个指标产出斜率/变化速率/持续性/异常次数等纵向特征（回看 5 年、每指标最多取近 20 个时间点）。不是只看最后一张报告。 |
++| 3. 趋势是否按真实检查日期计算 | **部分做到 → 已修复** | 指标曲线、本次 vs 上次：原本就用 `measured_at`（真实检查日期）✓。**"风险走势"图原本读审计日志、X 轴是预测发生时间（created_at）**——同一天连传 8 份并预测，就画成 15:45–17:00 的一条平线/竖线，即截图问题的根因。本次新增按检查日期回溯的 `/risk-timeline`（见改动 5/6），用户侧曲线全部切换过去；审计走势保留给管理台复盘（它回答的是"模型当时怎么判断"，是另一个问题）。 |
++| 4. 1Y/3Y/5Y 风险的预测终点是否明确 | **部分做到 → 已补齐标识** | 概率是**真实模型输出**（LightGBM + 等渗校准 + 固化分层切点），不是前端写死的数。但当前 ACTIVE 版本 `dev_bootstrap_v1` 的训练数据为**合成纵向病历**、结局为合成"综合慢病事件"——**未经真实临床队列验证**。因此："3Y 63.6%" 的准确表述是：*模型估计的、未来 3 年内发生综合心血管代谢及慢病相关事件的校准概率（演示模型）*。本次已把预测目标、预测依据、演示标识全部钉到界面上（改动 4），并通过 `/api/meta.model_card` 由后端下发，前端不许自己编。 |
++| 5. 风险归因是否有真实计算依据 | **已做到** | TreeSHAP 逐特征贡献 → 按指标聚合（避免 ALT_slope/ALT_dev 等派生特征正负相消的误导）→ 只输出**排序与方向**、刻意不给"贡献百分点"（SHAP 在 raw score 空间，与校准后概率不是一把尺子）。每次预测独立 trace_id，可追溯到具体特征值。不是大模型生成；AI 只负责解释既有结果（改动 7 已在界面上写明）。 |
++
++**进入改版的判定：属于场景 B（1、2 项已做到，第 3 项的"风险走势"部分未做到）——先修时间字段，再改 UI。本次两件事一并完成。**
++
++---
++
++## 二、你反馈的四个现象 → 根因 → 修复
++
++1. **"上传 8 张，每张只显示『已录入 1 条』，不知道是累计还是覆盖"**
++   根因：数据一直是累计的，但界面无累计视图。
++   修复：新增「我的历史检查资料」面板：`已上传 8 份报告｜2025.01—2026.08｜识别 X 条指标` + 逐份列表（检查日期 / 识别结果 / ✓已入库），每份支持**查看原文 / 修改日期 / 删除 / 重新识别**。
++
++2. **"检验日期要用户自己填 8 次，容易填错"**
++   根因：日期字段与上传动作解耦，且 OCR 结果里的日期没被利用。
++   修复：`/api/ocr` 新增报告日期识别（优先"采样/采集/送检/检验日期/报告"等关键词行，过滤出生日期等噪声，未来日期一律拒绝）；前端改为 **上传 → OCR → 「识别到检查日期：2025/10/07」→ 确认 / 修改**，识别不出才要求填写。支持一次多选批量上传，逐份确认或「全部确认入库」。
++
++3. **"63.6% 看不懂：什么东西 3 年有 63.6%？"**
++   修复：预测结果第二屏固定为「未来健康风险预测」：
++   - 预测目标：综合心血管代谢及慢病相关风险进展（含一句话解释"概率=未来 N 年内发生综合慢病事件的校准概率"）；
++   - 未来 1 年 / 3 年 / 5 年做成**可点击时间窗口**，点击切换该窗口的概率、分层、归因与叙述；
++   - 模型判断：未来 3 年内属于「高危」风险区间；
++   - 预测依据：2025.01—2026.08 期间 8 份检查报告 · 8 个检查时间点 · 共 21 项可连续比较指标；
++   - 演示模型横幅：`⚠ 当前为演示模型：训练数据为合成纵向病历……不代表真实疾病发生概率`（由 `model_card.development_only` 驱动，接真实模型后自动消失）。
++
++4. **"风险走势要么平线、要么竖线、要么一个点；横轴应该是 2025.01 → 2026.08 这种年月"**
++   根因：见核查项 3——按预测 created_at 画图，8 份报告一天传完，横轴挤在两小时里。
++   修复：新增 `GET /api/patients/{pid}/risk-timeline`：对每个真实检查日期 t，**只用 t 之前的数据、以 t 为索引日**重跑真实特征管线并推理，得到"随着一次次体检风险如何演变"的历史轨迹。前端：横轴刻度格式化为 `2025.01` 样式；**历史实线**（点色=当时分层）+ **未来虚线**（自最近检查日起、经 +1y/+3y/+5y 三个真实模型输出画出的累计风险预测，从 0% 起笔）+ "最近检查"参考线 + 常驻注释"预测≠确定结果"。该视图是派生分析，不写审计、不产生 trace（审计的 append-only 复盘价值不被污染）。
++   同时，「本次 vs 上次」标题写明确日期（`本次 2026.08.24 vs 上次 2026.05.13`），卡片顶部新增**检查时间轴条**：从初始点到终止点，把每一次检查按真实日期标成圆点，一眼看出 8 个时间点的分布；每个指标行附各自的对比日期对。
++
++---
++
++## 三、按需求文档"改动 1–8"逐条对照
++
++| 改动 | 状态 | 落点 |
++| --- | --- | --- |
++| 1 上传区累计状态 + 逐份管理 + 时间轴确认 | ✅ | 前端批量上传队列；`GET /patients/{pid}/reports`、`GET/PATCH/DELETE /reports/{id}`、`POST /reports/{id}/reparse`；`GET /patients/{pid}/timeline` 输出跨度/报告数/有效记录/可连续比较指标/各系统时间点（血脂 8 个时间点 ✓ / 血糖 仅 2 个 ⚠），达标后提示「数据已具备纵向趋势分析条件」+【开始风险预测】。STEP 条改为四步：导入历史资料 → 建立健康时间轴 → 风险预测 → 健康跟踪。 |
++| 2 本次最关注的问题 | ✅ | 预测前单选：肝脏/心血管/血糖代谢/肾脏/其他/不知道请全面分析；`/predict` 收 `concern`，**只影响回答顺序**，后台仍全身扫描；结果页第一行先回答关注点（异常→指向总览第 N 项；正常→明确说"相关指标未见明显异常，额外发现见下"）。 |
++| 3 风险优先级总览 | ✅ | 结果第一屏=「① 本次健康风险总览」：首要关注/第二关注/第三关注/需要留意 + 目前相对稳定的系统；排序沿用 ReferralEngine 临床优先级（priority+最大分级），每项写明**为什么排这里**（N 项指标异常、其中 M 项较上次真实恶化）+ 指标明细（值、分级、较上次方向）。 |
++| 4 1/3/5 年必须解释预测什么 | ✅ | 见上文第 3 点；`model_card` 随 `/api/meta` 与 `/predict.prediction_context` 下发。 |
++| 5 趋势页真实时间轴 | ✅ | 见上文第 4 点；「指标近 3 次曲线」→「指标历史趋势」，后端 `recent_n=24` 返回全部时间点，前端加 全部/近1年/近3年/近5年 筛选，横轴年月格式。 |
++| 6 历史与未来分开 | ✅ | 历史=实线（回溯），未来=虚线（真实多时程模型输出，**不是大模型生成的数值**），视觉与文案双重区分。 |
++| 7 AI 先结论后长文 | ✅ | AI 卡片顶部「最需要关注的 N 个问题」（≤3，来自模型/规则结果，按 为什么重要→历史变化→当前风险→建议关注 组织）；原五章长文全部收进「展开完整专业分析」折叠区；卡片副标注明"AI 只解释模型与规则的结果，不自行创造风险概率"。 |
++| 8 随访改人话 | ✅ | 「后续健康跟踪」：上次评估日期 + 分层驱动的建议复查时间（极高危≤1月/高危1-3月/中危3-6月/低危6-12月）+ 需要复查的项目（来自就医建议）；**上传新报告后自动比较**：重跑预测、与上一次 3 年风险对比，±2 个百分点内=稳定，输出 改善/稳定/升高 横幅。outcome/距预测天数/授权等科研字段完整保留在「科研随访（专业字段）」折叠区，回流链路未动。 |
++
++## 四、验收清单自查（需求文档第六节）
++
++已上传 8 份 → 页面明确显示 8 份均已入库 ✅｜数据库 8 个独立报告可查、无覆盖 ✅（新增 `tests/test_reports_db.py` 固化回归：8 份独立入库、改日期联动 lab_records、删除级联、重识别清空重灌，以及 OCR 日期识别 6 组用例——采样行优先/关键词优先级/多种日期格式/未来与非法日期拒绝/出生日期不误取；纯标准库编写，已全部运行通过）｜预测能说明读取了哪些历史数据 ✅（预测依据一行 + `structured_note`）｜趋势图全部真实检查日期 ✅｜一眼看懂最需要关注什么 ✅｜关注肝脏时先答肝脏、保留额外发现 ✅｜1/3/5Y 说明预测对象、演示概率明确标注 ✅｜历史与未来分开 ✅｜AI 长文前先给排序结论 ✅｜随访普通用户人话、科研端保留字段 ✅
++
++## 五、几个有意为之的取舍（请知悉）
++
++- **「查看原图」做成了「查看原文」**：化验单图片上通常印有姓名/条码等明文 PII，落库与代码库自身的规范 1.2（结构上无 PII 字段、入库前强制 scan_pii）直接冲突，故原始图片仍不持久化，可回看的是已脱敏校验的 OCR 文本。若业务上必须留原图，需先加图片端脱敏（打码/裁切）方案再开。
++- **回溯风险轨迹不写审计**：它是"用今天的模型回看历史"的派生分析，写进 append-only 审计会污染"模型当时怎么判断"的复盘价值；随访回填仍只针对审计里的真实预测 trace。
++- **自动比较会真实调用一次 `/predict`**（产生审计与 trace），仅在"该患者已有历史预测"且"本批上传全部入库完成"时触发一次，不会 8 份报告触发 8 次。
++- 建议顺手处理：`server.py` 里 Vision OCR 兜底的 API key 目前有硬编码缺省值，建议改为仅从环境变量读取，避免随代码分发。
++
++## 六、本次改动文件
++
++`app/db.py`（+65：报告管理 6 个方法）· `app/server.py`（+508：模型卡、报告管理 5 端点、timeline、risk-timeline、OCR 日期识别、predict 的 concern/总览/依据）· `app/static/index.html`（四步流程、批量上传、报告面板、时间轴卡、总览+未来预测块、人话随访、趋势页改版）· `app/static/app.js`（+714/-153）· `app/static/app.css`(+175) · `使用指南.md` 同步更新。核心库与既有 API 全部向后兼容，未删任何端点。

@@ -47,11 +47,18 @@
     <section class="card fade-in">
       <div class="row-between">
         <div class="card-title"><span class="dot"></span>原件</div>
-        <a v-if="fileUrl" :href="fileUrl" :download="report.source_filename"
-           class="tiny">下载原件 ›</a>
+        <div class="row" style="gap: 8px">
+          <button v-if="fileUrl && !isPdf" class="btn btn-sm btn-gold"
+                  style="padding: 2px 8px; font-size: 12px"
+                  @click="showLightbox = true">
+            🔍 放大查看
+          </button>
+          <a v-if="fileUrl" :href="fileUrl" :download="report.source_filename"
+             class="tiny" style="align-self: center">下载原件 ›</a>
+        </div>
       </div>
-      <div class="orig">
-        <img v-if="fileUrl && !isPdf" :src="fileUrl" alt="报告原件" />
+      <div class="orig clickable" @click="!isPdf && fileUrl ? (showLightbox = true) : null">
+        <img v-if="fileUrl && !isPdf" :src="fileUrl" alt="报告原件" title="点击放大查看大图" />
         <iframe v-else-if="fileUrl && isPdf" :src="fileUrl" title="报告原件"></iframe>
         <p v-else-if="fileMissing" class="tiny" style="padding: var(--sp-4)">
           该报告为演示数据或原件已移除，未存储文件
@@ -59,6 +66,19 @@
         <span v-else class="spin" style="margin: var(--sp-4)"></span>
       </div>
     </section>
+
+    <!-- 原件放大灯箱 -->
+    <div v-if="showLightbox" class="lightbox-overlay fade-in" @click.self="showLightbox = false">
+      <div class="lightbox-content">
+        <div class="lightbox-header">
+          <b>{{ report.source_filename }}</b>
+          <button class="lightbox-close" @click="showLightbox = false">✕</button>
+        </div>
+        <div class="lightbox-body">
+          <img :src="fileUrl" alt="原图高清预览" class="lightbox-img" />
+        </div>
+      </div>
+    </div>
 
     <!-- 提取的指标 -->
     <section v-if="report.observations?.length" class="card fade-in">
@@ -137,13 +157,23 @@ const fileMissing = ref(false)
 const editDate = ref('')
 const lowObs = ref([])
 const saving = ref(false)
+const showLightbox = ref(false)
 
 const isPdf = computed(() =>
   (report.value?.source_filename || '').toLowerCase().endsWith('.pdf'))
 
 function typeCN(t) {
-  return { lab_report: '检验报告', ultrasound_report: '超声检查',
-           checkup: '体检报告', other: '健康资料' }[t] || '健康资料'
+  return {
+    lab_report: '检验报告',
+    ultrasound_report: '超声检查',
+    mri_report: '磁共振(MRI)',
+    ct_report: 'CT检查',
+    imaging_report: '影像检查',
+    xray_report: 'X光/DR',
+    clinical_note: '病历小结',
+    checkup: '体检报告',
+    other: '健康资料',
+  }[t] || '健康资料'
 }
 function stCN(s) {
   return { ready: '已识别', needs_confirmation: '待确认', failed: '失败',
@@ -208,9 +238,21 @@ onBeforeUnmount(() => { if (fileUrl.value) URL.revokeObjectURL(fileUrl.value) })
 .orig img { max-width: 100%; display: block; }
 .orig iframe { width: 100%; height: 420px; border: none; }
 .mm { color: var(--gold-700); font-style: normal; }
-.finding { border-left: 3px solid var(--info); background: var(--info-bg);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 8px 12px;
-  margin-top: var(--sp-2); }
-.finding b { font-size: 13.5px; color: var(--info); }
-.finding p { margin: 3px 0 0; font-size: 13.5px; color: var(--ink-700); }
+.clickable { cursor: pointer; }
+.clickable:hover { opacity: 0.92; }
+
+/* 原图放大灯箱 Modal */
+.lightbox-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: var(--sp-3); }
+.lightbox-content { background: var(--surface); width: 100%; max-width: 860px; height: 85vh;
+  border-radius: var(--r-md); box-shadow: 0 20px 40px rgba(0,0,0,0.3); display: flex; flex-direction: column;
+  overflow: hidden; }
+.lightbox-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); background: var(--surface-card); }
+.lightbox-close { width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--surface-sunk);
+  color: var(--ink-700); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.lightbox-close:hover { background: var(--line-strong); }
+.lightbox-body { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center;
+  background: #111; padding: var(--sp-4); }
+.lightbox-img { max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
 </style>

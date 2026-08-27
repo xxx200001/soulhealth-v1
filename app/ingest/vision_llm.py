@@ -27,6 +27,7 @@ from .prompts import EXTRACTION_SYSTEM, extraction_user_prompt, repair_prompt
 
 _LAB_NAME_HINTS = ("lab", "blood", "化验", "肝功", "血", "生化", "检验")
 _METABOLIC_HINTS = ("糖", "血脂", "代谢", "尿酸", "metab", "glu")
+_MRI_JOINT_HINTS = ("mri", "knee", "膝", "关节", "核磁", "磁共振", "ct", "骨", "半月板", "韧带", "脊柱", "腰椎", "颈椎")
 
 # Anthropic 单图上限约 5MB（base64 后），留出 33% 膨胀余量
 MAX_IMAGE_BYTES = 3_600_000
@@ -67,7 +68,9 @@ class VisionNotSeeingImageError(ExtractionError):
 
 def _load_mock(file_path: Path) -> ExtractionResult:
     name = file_path.name.lower()
-    if any(h in name for h in _METABOLIC_HINTS):
+    if any(h in name for h in _MRI_JOINT_HINTS):
+        sample = "sample_mri_extraction.json"
+    elif any(h in name for h in _METABOLIC_HINTS):
         sample = "sample_metabolic_extraction.json"   # 第二病种：糖脂/尿酸
     elif any(h in name for h in _LAB_NAME_HINTS):
         sample = "sample_lab_extraction.json"

@@ -10,7 +10,16 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 
-DOCUMENT_TYPES = {"ultrasound_report", "lab_report", "clinical_note", "other"}
+DOCUMENT_TYPES = {
+    "ultrasound_report",
+    "mri_report",
+    "ct_report",
+    "imaging_report",
+    "xray_report",
+    "lab_report",
+    "clinical_note",
+    "other",
+}
 SEXES = {"female", "male", "unknown"}
 ABNORMAL_FLAGS = {"H", "L", "N"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -212,8 +221,8 @@ def from_dict(data: dict) -> ExtractionResult:
 
     if doc_type == "lab_report" and not observations:
         errors.append("lab_report 至少应抽取到 1 条 observations")
-    if doc_type == "ultrasound_report" and not (findings or data.get("impressions")):
-        errors.append("ultrasound_report 应抽取 findings 或 impressions")
+    if doc_type in ("ultrasound_report", "mri_report", "ct_report", "imaging_report", "xray_report") and not (findings or data.get("impressions")):
+        errors.append(f"{doc_type} 应抽取 findings 或 impressions")
 
     if errors:
         raise ValueError("；".join(errors))

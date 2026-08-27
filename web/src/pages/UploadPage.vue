@@ -44,21 +44,40 @@
     <!-- 逐份状态（F-UP-01：一次上传多份，界面可逐份看到状态） -->
     <section v-if="items.length" class="stack-sm stagger">
       <div v-for="r in items" :key="r.id" class="card rep">
-        <div class="row">
-          <span class="st" :class="`st-${r.status}`"></span>
-          <span class="grow">
-            <b class="fn">{{ r.source_filename }}</b>
-            <span class="tiny meta">
-              {{ typeCN(r.report_type) }}
-              <template v-if="r.report_date"> · 检查日期 {{ r.report_date }}
-                <em v-if="!r.date_confirmed" class="need">（待确认）</em>
-              </template>
-              <template v-if="r.stats?.observations">
-                · 提取 {{ r.stats.observations }} 项
-              </template>
+        <div class="row row-between" style="align-items: center">
+          <div class="row" style="align-items: center; gap: 8px; flex: 1; min-width: 0">
+            <span class="st" :class="`st-${r.status}`"></span>
+            <span class="grow" style="min-width: 0">
+              <b class="fn clickable" @click="openLightbox(r)" :title="'点击查看原图：' + r.source_filename">
+                {{ r.source_filename }}
+                <span class="ico-eye" v-html="icoEye"></span>
+              </b>
+              <span class="tiny meta">
+                {{ typeCN(r.report_type) }}
+                <template v-if="r.report_date"> · 检查日期 {{ r.report_date }}
+                  <em v-if="!r.date_confirmed" class="need">（待确认）</em>
+                </template>
+                <template v-if="r.stats?.observations">
+                  · 提取 {{ r.stats.observations }} 项
+                </template>
+                <template v-if="r.stats?.findings">
+                  · 提取 {{ r.stats.findings }} 项所见
+                </template>
+              </span>
             </span>
-          </span>
-          <span class="badge" :class="statusBadge(r.status)">{{ statusCN(r.status) }}</span>
+          </div>
+          <div class="row" style="gap: 6px; align-items: center; flex: none">
+            <button v-if="r.id && !r._local" class="btn btn-sm btn-quiet"
+                    style="padding: 3px 8px; font-size: 12px"
+                    @click="openLightbox(r)">
+              查看原图
+            </button>
+            <span class="badge clickable" :class="statusBadge(r.status)"
+                  @click="r.status === 'needs_confirmation' ? openLightbox(r) : null"
+                  :title="r.status === 'needs_confirmation' ? '点击查看原图核对' : ''">
+              {{ statusCN(r.status) }}
+            </span>
+          </div>
         </div>
 
         <p v-if="r.duplicate_of" class="alert alert-info dup">
@@ -69,13 +88,40 @@
           <button class="btn btn-sm btn-ghost" style="margin-left:8px" @click="retry(r)">重试</button>
         </p>
 
-        <!-- 待确认：日期 + 低置信数值就地处理（F-UP-05 / AC-05） -->
+        <!-- 待确认：原图核对 + 日期 + 低置信数值就地处理（F-UP-05 / AC-05） -->
         <div v-if="r.status === 'needs_confirmation'" class="confirm">
+          <!-- 原图核对缩略窗 -->
+          <div class="preview-box">
+            <div class="row-between" style="align-items: center; margin-bottom: 6px">
+              <span class="preview-tag">
+                <span class="dot-warn"></span>
+                <b>原图核对</b>：请查看原图上的实际检查日期
+              </span>
+              <button class="btn btn-sm btn-gold" style="padding: 2px 10px; font-size: 12px"
+                      @click="openLightbox(r)">
+                🔍 点击放大查看完整原图
+              </button>
+            </div>
+            <div class="thumb-container clickable" @click="openLightbox(r)">
+              <img v-if="r._fileUrl && !isPdf(r)" :src="r._fileUrl" alt="报告缩略图" class="thumb-img" />
+              <div v-else-if="r._fileUrl && isPdf(r)" class="pdf-placeholder">
+                <span>📄 PDF 文档（点击全屏浏览）</span>
+              </div>
+              <div v-else class="thumb-loading">
+                <span class="spin"></span>
+                <span class="tiny">正在加载原图预览…</span>
+              </div>
+              <div class="thumb-mask">
+                <span class="thumb-mask-text">🔍 点击查看高清大图</span>
+              </div>
+            </div>
+          </div>
+
           <div v-if="!r.date_confirmed" class="field">
-            <label class="label">这份报告的检查日期</label>
-            <div class="row">
+            <label class="label">这份报告的检查日期（按上方原图核对）</label>
+            <div class="row" style="align-items: center; gap: 8px">
               <input v-model="r._date" type="date" class="input" style="max-width: 180px" />
-              <span class="tiny">趋势将使用此真实日期，而不是今天的上传时间</span>
+              <span class="tiny muted">填入报告单印刷的实际日期</span>
             </div>
           </div>
           <div v-if="r._lowObs?.length" class="field">
@@ -87,12 +133,50 @@
               <span class="tiny">{{ o.unit }}</span>
             </div>
           </div>
-          <button class="btn btn-primary btn-sm" :disabled="r._saving" @click="confirm(r)">
+          <button class="btn btn-primary btn-sm btn-block" :disabled="r._saving" @click="confirm(r)">
             <span v-if="r._saving" class="spin"></span>确认并入档
           </button>
         </div>
       </div>
     </section>
+
+    <!-- 原图全屏放大灯箱 Modal -->
+    <div v-if="lightbox.show" class="lightbox-overlay fade-in" @click.self="closeLightbox">
+      <div class="lightbox-content">
+        <div class="lightbox-header">
+          <div>
+            <b class="lightbox-title">{{ lightbox.report?.source_filename }}</b>
+            <span class="tiny muted" style="margin-left: 8px">
+              {{ typeCN(lightbox.report?.report_type) }} ·
+              原记录日期 {{ lightbox.report?.report_date || '待确认' }}
+            </span>
+          </div>
+          <div class="row" style="gap: 8px; align-items: center">
+            <button class="btn btn-sm btn-quiet" @click="zoomIn" title="放大">＋ 放大</button>
+            <button class="btn btn-sm btn-quiet" @click="zoomOut" title="缩小">－ 缩小</button>
+            <button class="btn btn-sm btn-quiet" @click="resetZoom" title="重置">1:1</button>
+            <button class="lightbox-close" @click="closeLightbox" title="关闭 (Esc)">✕</button>
+          </div>
+        </div>
+        <div class="lightbox-body">
+          <div class="lightbox-img-wrap" :style="{ transform: `scale(${lightbox.zoom})` }">
+            <img v-if="lightbox.url && !isPdf(lightbox.report)" :src="lightbox.url"
+                 alt="原图高清预览" class="lightbox-img" />
+            <iframe v-else-if="lightbox.url && isPdf(lightbox.report)" :src="lightbox.url"
+                    class="lightbox-iframe" title="PDF报告原件"></iframe>
+            <div v-else-if="lightbox.loading" class="lightbox-loading">
+              <span class="spin"></span>
+              <p style="margin-top: 8px">正在获取原图…</p>
+            </div>
+            <p v-else class="alert alert-warn">原件暂时无法预览</p>
+          </div>
+        </div>
+        <div class="lightbox-footer">
+          <span class="tiny muted">提示：双指捏合或点击放大/缩小按钮可缩放查看报告文字与日期详情</span>
+          <button class="btn btn-primary btn-sm" @click="closeLightbox">关闭预览</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 分析范围与去向（F-UP-08 / AC-06） -->
     <section v-if="scope" class="card fade-in scope">
@@ -120,7 +204,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { useSessionStore } from '../store/session'
 
@@ -134,10 +218,85 @@ const scope = ref(null)
 const notice = ref(null)   // { type: 'ok' | 'warn' | 'danger', text }
 
 const icoUp = '<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v4a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19v-4"/></svg>'
+const icoEye = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block; vertical-align:middle; margin-left:4px; opacity:0.75"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
+
+const lightbox = ref({
+  show: false,
+  report: null,
+  url: '',
+  zoom: 1,
+  loading: false,
+})
+
+function isPdf(r) {
+  return (r?.source_filename || '').toLowerCase().endsWith('.pdf')
+}
+
+async function openLightbox(r) {
+  if (!r?.id || r._local) return
+  lightbox.value.show = true
+  lightbox.value.report = r
+  lightbox.value.zoom = 1
+  lightbox.value.loading = true
+
+  if (r._fileUrl) {
+    lightbox.value.url = r._fileUrl
+    lightbox.value.loading = false
+    return
+  }
+
+  try {
+    const res = await fetch(api.reportFileUrl(r.id), {
+      headers: { Authorization: `Bearer ${localStorage.getItem('sh_token')}` },
+    })
+    if (res.ok) {
+      const blob = await res.blob()
+      const u = URL.createObjectURL(blob)
+      r._fileUrl = u
+      lightbox.value.url = u
+    }
+  } catch (err) {
+    console.error('获取原图失败', err)
+  } finally {
+    lightbox.value.loading = false
+  }
+}
+
+function closeLightbox() {
+  lightbox.value.show = false
+  lightbox.value.zoom = 1
+}
+
+function zoomIn() {
+  lightbox.value.zoom = Math.min(3.0, lightbox.value.zoom + 0.25)
+}
+
+function zoomOut() {
+  lightbox.value.zoom = Math.max(0.5, lightbox.value.zoom - 0.25)
+}
+
+function resetZoom() {
+  lightbox.value.zoom = 1.0
+}
+
+function onKeydown(e) {
+  if (e.key === 'Escape' && lightbox.value.show) {
+    closeLightbox()
+  }
+}
 
 function typeCN(t) {
-  return { lab_report: '检验报告', ultrasound_report: '超声检查',
-           checkup: '体检报告', other: '健康资料' }[t] || '健康资料'
+  return {
+    lab_report: '检验报告',
+    ultrasound_report: '超声检查',
+    mri_report: '磁共振(MRI)',
+    ct_report: 'CT检查',
+    imaging_report: '影像检查',
+    xray_report: 'X光/DR',
+    clinical_note: '病历小结',
+    checkup: '体检报告',
+    other: '健康资料',
+  }[t] || '健康资料'
 }
 function statusCN(s) {
   return { uploaded: '排队中', processing: '识别中', ready: '已识别',
@@ -182,7 +341,7 @@ async function onPick(e) {
         id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
         status: 'failed', source_filename: f.name,
         error: `上传请求失败：${err.message}`,
-        _local: true, _file: f, _lowObs: [], _saving: false,
+        _local: true, _file: f, _lowObs: [], _saving: false, _fileUrl: '',
       })
     }
   }
@@ -216,7 +375,7 @@ function buildNotice(m) {
   if (!m.failed) {
     return { type: 'ok',
       text: `本次 ${m.total} 份已全部上传成功 ✓ 其中 ${m.needs_confirmation} 份` +
-            '需要你在下方确认日期或数值后入档' }
+            '需要你在下方核对原图并确认日期或数值后入档' }
   }
   if (okCount) {
     return { type: 'warn',
@@ -229,7 +388,7 @@ function buildNotice(m) {
 async function hydrate(list) {
   // 为待确认报告拉取低置信观测项，就地编辑；逐份追加到列表
   for (const r of list) {
-    const row = { ...r, _date: r.report_date || '', _lowObs: [], _saving: false }
+    const row = { ...r, _date: r.report_date || '', _lowObs: [], _saving: false, _fileUrl: '' }
     if (r.status === 'needs_confirmation') {
       try {
         const full = await api.getReport(r.id)
@@ -239,7 +398,21 @@ async function hydrate(list) {
       } catch { /* 保底仍可确认日期 */ }
     }
     items.value.push(row)
+    // 异步加载缩略图
+    loadThumb(row)
   }
+}
+
+async function loadThumb(row) {
+  if (!row.id || row._local) return
+  try {
+    const res = await fetch(api.reportFileUrl(row.id), {
+      headers: { Authorization: `Bearer ${localStorage.getItem('sh_token')}` },
+    })
+    if (res.ok) {
+      row._fileUrl = URL.createObjectURL(await res.blob())
+    }
+  } catch { /* 忽略缩略图静默失败 */ }
 }
 
 async function confirm(r) {
@@ -271,7 +444,7 @@ async function retry(r) {
     try {
       const res = await api.uploadReports(session.profileId, [r._file])
       const nr = res.reports[0]
-      Object.assign(r, nr, { _local: false, _file: null })
+      Object.assign(r, nr, { _local: false, _file: null, _fileUrl: '' })
       if (nr.status === 'needs_confirmation') {
         try {
           const full = await api.getReport(nr.id)
@@ -281,6 +454,7 @@ async function retry(r) {
             .map((o) => ({ ...o, _val: o.value_num }))
         } catch { /* 保底仍可确认日期 */ }
       }
+      loadThumb(r)
       if (summary.value) {
         summary.value.failed -= 1
         if (nr.status === 'ready') summary.value.ready += 1
@@ -306,7 +480,18 @@ async function loadScope() {
   try { scope.value = await api.analysisScope(session.profileId) } catch { /* 空 */ }
 }
 
-onMounted(loadScope)
+onMounted(() => {
+  loadScope()
+  window.addEventListener('keydown', onKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  // 清理 blob URLs
+  for (const r of items.value) {
+    if (r._fileUrl) URL.revokeObjectURL(r._fileUrl)
+  }
+})
 </script>
 
 <style scoped>
@@ -335,8 +520,11 @@ onMounted(loadScope)
 .st-needs_confirmation { background: var(--warn); }
 .st-failed { background: var(--danger); }
 .st-processing, .st-uploaded { background: var(--ink-300); }
-.fn { font-size: 14px; display: block; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
+.fn { font-size: 14px; display: inline-flex; align-items: center; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; max-width: 44vw; }
+.clickable { cursor: pointer; }
+.clickable:hover { color: var(--brand-700); }
+.ico-eye { display: inline-flex; align-items: center; }
 .meta { display: block; }
 .need { color: var(--warn); font-style: normal; }
 .dup { margin-top: var(--sp-2); }
@@ -345,4 +533,47 @@ onMounted(loadScope)
   flex-direction: column; gap: var(--sp-3); }
 .obn { min-width: 96px; font-size: 13px; }
 .scope { border-color: var(--gold-500); }
+
+/* 原图核对缩略窗 */
+.preview-box { background: var(--surface-sunk); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 10px 12px; }
+.preview-tag { font-size: 12px; display: inline-flex; align-items: center; gap: 4px; color: var(--ink-700); }
+.dot-warn { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); display: inline-block; }
+.thumb-container { position: relative; width: 100%; height: 140px; background: #00000008;
+  border-radius: var(--r-sm); overflow: hidden; border: 1px dashed var(--line-strong);
+  display: flex; align-items: center; justify-content: center; margin-top: 6px; }
+.thumb-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.thumb-loading { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink-400); }
+.pdf-placeholder { font-size: 13px; color: var(--brand-700); font-weight: 500; }
+.thumb-mask { position: absolute; inset: 0; background: rgba(0,0,0,0.38); opacity: 0;
+  display: flex; align-items: center; justify-content: center; transition: opacity 0.2s; }
+.thumb-container:hover .thumb-mask, .thumb-container:active .thumb-mask { opacity: 1; }
+.thumb-mask-text { color: #fff; font-size: 13px; font-weight: 600; background: rgba(0,0,0,0.65);
+  padding: 4px 12px; border-radius: 20px; backdrop-filter: blur(4px); }
+
+/* 原图放大灯箱 Modal */
+.lightbox-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: var(--sp-3); }
+.lightbox-content { background: var(--surface); width: 100%; max-width: 860px; height: 90vh;
+  border-radius: var(--r-md); box-shadow: 0 20px 40px rgba(0,0,0,0.3); display: flex; flex-direction: column;
+  overflow: hidden; animation: zoomIn 0.2s ease-out; }
+.lightbox-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); background: var(--surface-card); }
+.lightbox-title { font-size: 15px; color: var(--ink-900); }
+.lightbox-close { width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--surface-sunk);
+  color: var(--ink-700); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.lightbox-close:hover { background: var(--line-strong); }
+.lightbox-body { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center;
+  background: #111; padding: var(--sp-4); }
+.lightbox-img-wrap { transition: transform 0.2s ease-out; max-width: 100%; max-height: 100%; }
+.lightbox-img { max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+.lightbox-iframe { width: 100%; height: 70vh; border: none; background: #fff; }
+.lightbox-loading { color: #fff; display: flex; flex-direction: column; align-items: center; }
+.lightbox-footer { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px;
+  border-top: 1px solid var(--line); background: var(--surface-card); }
+
+@keyframes zoomIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
 </style>
