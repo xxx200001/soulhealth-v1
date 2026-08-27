@@ -43,6 +43,7 @@ data/uploads/*
 
 # Logs & System
 *.log
+tunnel_url.txt
 .DS_Store
 Thumbs.db
 .vscode/
