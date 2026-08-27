@@ -109,8 +109,8 @@ def sniff_media_type(data: bytes, file_path: Path) -> Optional[str]:
             ".pdf": "application/pdf"}.get(file_path.suffix.lower())
 
 
-def _optimize_image(raw_bytes: bytes, max_dim: int = 1600, quality: int = 85) -> Tuple[bytes, str]:
-    """智能预处理：压缩分辨率与字节，降低 80%+ Vision Token 消耗，防止中转平台 429 Token 负载报错。"""
+def _optimize_image(raw_bytes: bytes, max_dim: int = 1200, quality: int = 75) -> Tuple[bytes, str]:
+    """智能预处理：压缩分辨率与字节，降低 80%+ Vision Token 消耗，显著提升多模态图像传输与模型推理速度。"""
     try:
         import io
         from PIL import Image
