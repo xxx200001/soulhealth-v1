@@ -61,15 +61,22 @@ def main():
     tunnel_url = None
     pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 
+    def read_tunnel():
+        nonlocal tunnel_url
+        for line in iter(tunnel_proc.stdout.readline, ""):
+            if not line:
+                break
+            if not tunnel_url:
+                m = pattern.search(line)
+                if m:
+                    tunnel_url = m.group(0)
+
+    t_tunnel = threading.Thread(target=read_tunnel, daemon=True)
+    t_tunnel.start()
+
     start_time = time.time()
-    while time.time() - start_time < 30:
-        line = tunnel_proc.stdout.readline()
-        if not line:
-            break
-        match = pattern.search(line)
-        if match:
-            tunnel_url = match.group(0)
-            break
+    while not tunnel_url and (time.time() - start_time < 30):
+        time.sleep(0.3)
 
     if tunnel_url:
         print("\n" + "=" * 60, flush=True)
