@@ -132,8 +132,12 @@ class IndicatorLexicon:
             if res.matched:
                 return res
         target = cleaned or (raw_name or "")
+        # 如果包含比值/除号关系，禁止截断并错配到单侧指标（如 AST/ALT 不得错配为 AST）
+        if "/" in target or "比" in target or "RATIO" in target.upper():
+            return LexiconMatch(None, 0.0, "none", query=target)
+
         tokens = [t.strip(" ()[]（）【】:：·")
-                  for t in re.split(r"[\s/()（）\[\]]+", target)
+                  for t in re.split(r"[\s()（）\[\]]+", target)
                   if t.strip(" ()[]（）【】:：·")]
         for t in tokens:
             if len(t) >= 2 or t in self.registry.codes:

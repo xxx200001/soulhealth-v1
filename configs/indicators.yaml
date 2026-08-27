@@ -71,6 +71,26 @@ indicators:
       - { sex: M, age: [18, 120], lower: 15, upper: 40 }
       - { sex: F, age: [18, 120], lower: 13, upper: 35 }
 
+  AST_ALT:
+    name_cn: 谷草/谷丙比值
+    aliases: [AST/ALT, "AST/ALT比值", 谷草/谷丙, 谷草/谷丙比值, 谷草谷丙比值, AST:ALT, AST/ALT比率]
+    canonical_unit: ratio
+    plausible_range: [0.01, 20]
+    magnitude_fix: false
+    cv_intra: 0.10
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0.8, upper: 1.5 }
+
+  ALT_AST:
+    name_cn: 谷丙/谷草比值
+    aliases: [ALT/AST, "ALT/AST比值", 谷丙/谷草, 谷丙/谷草比值, 谷丙谷草比值, ALT:AST, ALT/AST比率]
+    canonical_unit: ratio
+    plausible_range: [0.01, 20]
+    magnitude_fix: false
+    cv_intra: 0.10
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0.6, upper: 1.3 }
+
   GGT:
     name_cn: γ-谷氨酰转移酶
     aliases: [GGT, "γ-GT", GT, 谷氨酰转肽酶, "γ-谷氨酰转移酶", r-GT]
