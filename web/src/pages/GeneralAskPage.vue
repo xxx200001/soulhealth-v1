@@ -19,7 +19,21 @@
         </div>
       </template>
 
-      <div v-if="busy" class="msg msg-ai"><span class="spin"></span></div>
+      <!-- AI 思考中动态卡片 -->
+      <div v-if="busy" class="msg msg-ai thinking-msg fade-in">
+        <div class="ai-thinking">
+          <div class="think-icon-box">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="spin-slow">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+            </svg>
+          </div>
+          <span class="think-label">健康顾问正在思考解答</span>
+          <span class="dot-flashing">
+            <i></i><i></i><i></i>
+          </span>
+        </div>
+      </div>
 
       <!-- 档案入口引导（在回答后温和提示） -->
       <div v-if="answered && !busy" class="archive-hint fade-in">
@@ -125,4 +139,56 @@ async function send(text) {
 }
 .hint-ico { font-size: 16px; flex: none; margin-top: 1px; }
 .hint-link { color: var(--brand-700); font-weight: 600; text-decoration: underline; }
+
+/* 思考中动态卡片 */
+.thinking-msg {
+  padding: 11px 16px !important;
+  background: #ffffff !important;
+  border: 1px solid var(--brand-200, #c8ded4) !important;
+  border-radius: var(--r-md) !important;
+  border-bottom-left-radius: 4px !important;
+  box-shadow: 0 2px 8px rgba(45, 95, 75, 0.06);
+}
+.ai-thinking {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.think-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-600);
+}
+.spin-slow {
+  animation: spin 2.2s linear infinite;
+}
+.think-label {
+  font-size: 13.5px;
+  color: var(--ink-700);
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.dot-flashing {
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+  margin-left: 2px;
+}
+.dot-flashing i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--brand-600);
+  display: inline-block;
+  animation: bounceDot 1.4s infinite ease-in-out both;
+}
+.dot-flashing i:nth-child(1) { animation-delay: -0.32s; }
+.dot-flashing i:nth-child(2) { animation-delay: -0.16s; }
+.dot-flashing i:nth-child(3) { animation-delay: 0s; }
+
+@keyframes bounceDot {
+  0%, 80%, 100% { transform: scale(0.3); opacity: 0.3; }
+  40% { transform: scale(1); opacity: 1; }
+}
 </style>
