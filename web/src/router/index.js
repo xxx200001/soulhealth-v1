@@ -26,8 +26,11 @@ const routes = [
   { path: '/recipe/:rcid', component: () => import('../pages/RecipePage.vue'), // P10
     meta: { title: '菜谱详情', nav: 'plan', back: '/plan', needProfile: true } },
 
+  { path: '/ask/general', component: () => import('../pages/GeneralAskPage.vue'),
+    meta: { title: '健康问答', nav: 'home', back: '/', needProfile: false } },
+
   { path: '/ask', component: () => import('../pages/AskPage.vue'),           // P12
-    meta: { title: '问问我的健康', nav: 'home', back: '/', needProfile: true } },
+    meta: { title: '结合档案问一问', nav: 'analysis', back: '/analysis', needProfile: true } },
 
   { path: '/archive', component: () => import('../pages/ArchivePage.vue'),   // P13
     meta: { title: '我的健康档案', nav: 'archive', needProfile: true } },

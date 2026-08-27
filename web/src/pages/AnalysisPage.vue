@@ -114,6 +114,26 @@
         </div>
       </section>
 
+      <!-- 结合档案问一问：分析完成后最适合的入口位置 -->
+      <section v-if="assessment" class="card fade-in ask-archive-card card-clickable"
+               @click="$router.push('/ask')">
+        <div class="ask-archive-row">
+          <span class="ask-archive-ico">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none"
+                 stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                 stroke-linejoin="round">
+              <path d="M21 12a8 8 0 1 0-3.1 6.3L21 20l-.9-3.4A8 8 0 0 0 21 12Z"/>
+              <path d="M8 10h8M8 14h5"/>
+            </svg>
+          </span>
+          <div class="ask-archive-text">
+            <b class="ask-archive-title">结合档案问一问</b>
+            <span class="ask-archive-sub">基于你的报告、指标趋势与分析结果，回答个性化健康问题</span>
+          </div>
+          <span class="ask-archive-arrow">›</span>
+        </div>
+      </section>
+
       <!-- 趋势入口 + 免责 -->
       <button class="btn btn-ghost btn-block" @click="$router.push('/trends')">
         查看健康趋势与本次 VS 上次 ›
@@ -281,4 +301,42 @@ onMounted(async () => {
 .stb:last-child { border-bottom: none; }
 .stb b { font-size: 14px; min-width: 60px; }
 .stb .tiny { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 结合档案问一问 入口卡 */
+.ask-archive-card {
+  border: 1.5px solid var(--gold-300);
+  background: linear-gradient(135deg, var(--gold-050, #fefcf5) 0%, #fff 100%);
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+.ask-archive-card:hover {
+  border-color: var(--gold-500);
+  box-shadow: 0 3px 12px rgba(180, 140, 40, 0.12);
+  transform: translateY(-1px);
+}
+.ask-archive-row {
+  display: flex; align-items: center; gap: 12px;
+}
+.ask-archive-ico {
+  display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 11px;
+  background: var(--gold-100); color: var(--gold-700); flex-shrink: 0;
+}
+.ask-archive-text {
+  display: flex; flex-direction: column; flex-grow: 1; gap: 3px;
+}
+.ask-archive-title {
+  font-size: 14.5px; font-weight: 700; color: var(--gold-800, #6d5a1e);
+  font-family: var(--font-serif);
+}
+.ask-archive-sub {
+  font-size: 11.5px; color: var(--ink-500); line-height: 1.4;
+}
+.ask-archive-arrow {
+  font-size: 22px; font-weight: 700; color: var(--gold-600);
+  transition: transform 0.2s ease;
+}
+.ask-archive-card:hover .ask-archive-arrow {
+  transform: translateX(3px);
+}
 </style>

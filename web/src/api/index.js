@@ -107,6 +107,7 @@ export const api = {
   // ---- 问询 ----
   ask: (pid, text, conversationId) =>
     post('/api/ask', { profile_id: pid, text, conversation_id: conversationId || null }),
+  askGeneral: (text) => post('/api/ask/general', { text }),
   conversations: (pid) => request(`/api/ask/conversations?${q({ profile_id: pid })}`),
   conversation: (cid) => request(`/api/ask/conversations/${cid}`),
 }

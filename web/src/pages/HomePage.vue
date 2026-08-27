@@ -37,9 +37,9 @@
       <button class="card ent card-clickable" @click="$router.push('/upload')">
         <span class="ico up" v-html="icons.upload"></span><b>上传健康资料</b>
       </button>
-      <button class="card ent card-clickable" @click="$router.push('/ask')">
+      <button class="card ent card-clickable" @click="$router.push('/ask/general')">
         <span class="ico ask" v-html="icons.ask"></span><b>问问我的健康</b>
-        <span class="tiny">结合我的历史档案回答</span>
+        <span class="tiny">随时问，直接答</span>
       </button>
       <button class="card ent card-clickable" @click="$router.push('/archive')">
         <span class="ico ar" v-html="icons.archive"></span><b>我的健康档案</b>
