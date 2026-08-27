@@ -136,8 +136,8 @@ def _optimize_image(raw_bytes: bytes, max_dim: int = 1200, quality: int = 75) ->
         return raw_bytes, "image/jpeg"
 
 
-def _build_source_block(file_path: Path) -> Tuple[dict, dict]:
-    """前置校验并构造内容块。返回 (block, diagnostics)。"""
+def _build_source_blocks(file_path: Path) -> Tuple[List[dict], dict]:
+    """前置校验并构造多尺度高清内容块（整页 + 左右双栏切片增强）。返回 (blocks, diagnostics)。"""
     data = file_path.read_bytes()
     if not data:
         raise VisionInputError(
@@ -158,49 +158,85 @@ def _build_source_block(file_path: Path) -> Tuple[dict, dict]:
             f"{limit / 1e6:.1f}MB。请压缩后重试（手机拍照建议导出为"
             "「中等质量」JPG，一般 1MB 以内即可清晰识别）。")
 
-    # 对非 PDF 图片进行智能轻量化，大幅节省视觉 Token
-    if not is_pdf:
-        data, media_type = _optimize_image(data)
-
-    b64 = base64.b64encode(data).decode("ascii")
     diag = {"filename": file_path.name, "bytes": len(data),
-            "media_type": media_type, "b64_len": len(b64),
-            "model": config.LLM_MODEL}
+            "media_type": media_type, "model": config.VISION_MODEL}
+
     if is_pdf:
-        return ({"type": "document",
-                 "source": {"type": "base64", "media_type": media_type, "data": b64}},
+        b64 = base64.b64encode(data).decode("ascii")
+        diag["b64_len"] = len(b64)
+        return ([{"type": "document",
+                  "source": {"type": "base64", "media_type": media_type, "data": b64}}],
                 diag)
-    return ({"type": "image",
-             "source": {"type": "base64", "media_type": media_type, "data": b64}},
-            diag)
+
+    # 图像智能处理：EXIF 自动回正 + 多尺度/分栏高清切片
+    try:
+        import io
+        from PIL import Image, ImageOps, ImageEnhance
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+        w, h = im.size
+        
+        blocks = []
+        def _to_block(pil_img, quality=80):
+            buf = io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=quality, optimize=True)
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": encoded}}
+
+        # 若为较宽的双栏化验单据，采用【左右双栏增强切片 + 整页全景】
+        if w >= 600 and (w / float(h) >= 0.65):
+            mid = int(w * 0.51)
+            overlap = int(w * 0.05)
+            left_crop = im.crop((0, 0, min(w, mid + overlap), h))
+            right_crop = im.crop((max(0, mid - overlap), 0, w, h))
+            
+            left_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(left_crop, cutoff=0.5)).enhance(1.2).convert("RGB")
+            right_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(right_crop, cutoff=0.5)).enhance(1.2).convert("RGB")
+            
+            blocks.append({"type": "text", "text": "【图片 1：左半栏（序号 1~16 全部项目）】请按序号 1~16 自上而下识别："})
+            blocks.append(_to_block(left_enh, quality=85))
+            blocks.append({"type": "text", "text": "【图片 2：右半栏（序号 17~32 全部项目）】请按序号 17~32 自上而下识别："})
+            blocks.append(_to_block(right_enh, quality=85))
+            blocks.append({"type": "text", "text": "【图片 0：化验单完整原图全景】用于确认报告日期与全局版式："})
+            blocks.append(_to_block(im, quality=75))
+        else:
+            opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=85)
+            b64 = base64.b64encode(opt_data).decode("ascii")
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": opt_mime, "data": b64}})
+            
+        diag["blocks_count"] = len(blocks)
+        return blocks, diag
+    except Exception:
+        opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=85)
+        b64 = base64.b64encode(opt_data).decode("ascii")
+        return ([{"type": "image", "source": {"type": "base64", "media_type": opt_mime, "data": b64}}], diag)
 
 
 def _diag_text(diag: dict) -> str:
     return (f"（诊断：文件 {diag['filename']}，{diag['bytes']} 字节，"
-            f"media_type={diag['media_type']}，base64 {diag['b64_len']} 字符，"
+            f"media_type={diag['media_type']}，"
             f"模型 {diag['model']}）")
 
 
 # ---------------------------------------------------------------- 主流程
 
-def _extract_via_anthropic(source_block: dict, diag: dict,
+def _extract_via_anthropic(source_blocks: List[dict], diag: dict,
                            doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
     if not config.ANTHROPIC_API_KEY:
         return None, None
     import anthropic
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
                                  base_url=config.ANTHROPIC_BASE_URL,
-                                 timeout=30.0)
+                                 timeout=60.0)
     messages = [{
         "role": "user",
-        "content": [source_block,
+        "content": [*source_blocks,
                     {"type": "text", "text": extraction_user_prompt(doc_type_hint)}],
     }]
 
     # 主备视觉模型轮询表
     primary_model = config.VISION_MODEL
     candidate_models = [primary_model]
-    for m in ("claude-opus-4-6", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-5"):
+    for m in ("claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-8", "claude-sonnet-5"):
         if m not in candidate_models:
             candidate_models.append(m)
 
@@ -210,7 +246,7 @@ def _extract_via_anthropic(source_block: dict, diag: dict,
             try:
                 resp = client.messages.create(
                     model=model_name,
-                    max_tokens=3000,
+                    max_tokens=4500,
                     system=EXTRACTION_SYSTEM,
                     messages=messages,
                 )
@@ -227,8 +263,8 @@ def _extract_via_anthropic(source_block: dict, diag: dict,
                         f"模型原话：{(text or '').strip()[:160]}"
                     )
                 last_error = exc
-                # 若遇到 429 负载限流或 400 服务不可用，适度退避
-                if "429" in err_str or "400" in err_str or "token负载" in err_str or "暂时不可用" in err_str:
+                # 若遇到 429 负载限流或 400/502 服务不可用，适度退避
+                if any(k in err_str for k in ("429", "400", "502", "503", "token负载", "暂时不可用", "Bad Gateway")):
                     time.sleep(1.5)
                     break  # 尝试切换下一个候选模型
                 messages.append({"role": "assistant", "content": text or "(空)"})
@@ -297,10 +333,10 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
             "如需离线演示请显式设置 SOULHEALTH_MOCK=1（演示样例会明确标注）。"
         )
 
-    source_block, diag = _build_source_block(file_path)
+    source_blocks, diag = _build_source_blocks(file_path)
 
-    # 1. 优先 Anthropic 视觉通道（主通道：刀盾）
-    data, anthropic_err = _extract_via_anthropic(source_block, diag, doc_type_hint)
+    # 1. 优先 Anthropic 视觉通道（主通道：OpenASI / Claude）
+    data, anthropic_err = _extract_via_anthropic(source_blocks, diag, doc_type_hint)
     if data:
         return from_dict(data)
 
