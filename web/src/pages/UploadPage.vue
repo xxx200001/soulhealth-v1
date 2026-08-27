@@ -327,29 +327,32 @@ async function onPick(e) {
   items.value = []
   const merged = { total: 0, ready: 0, needs_confirmation: 0, failed: 0,
                    observations: 0, comparable_codes: 0, date_span: null }
-  for (const f of files) {
-    doing.value += 1
-    try {
-      const res = await api.uploadReports(session.profileId, [f])
-      mergeSummary(merged, res)
-      await hydrate(res.reports)
-    } catch (err) {
-      // 请求本身失败（网络/超时）：文件未到达服务端，保留在列表中可重传
-      merged.total += 1
-      merged.failed += 1
-      items.value.push({
-        id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-        status: 'failed', source_filename: f.name,
-        error: `上传请求失败：${err.message}`,
-        _local: true, _file: f, _lowObs: [], _saving: false, _fileUrl: '',
-      })
+  try {
+    for (const f of files) {
+      doing.value += 1
+      try {
+        const res = await api.uploadReports(session.profileId, [f])
+        mergeSummary(merged, res)
+        await hydrate(res.reports)
+      } catch (err) {
+        // 请求本身失败（网络/超时）：文件未到达服务端，保留在列表中可重传
+        merged.total += 1
+        merged.failed += 1
+        items.value.push({
+          id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+          status: 'failed', source_filename: f.name,
+          error: `上传请求失败：${err.message}`,
+          _local: true, _file: f, _lowObs: [], _saving: false, _fileUrl: '',
+        })
+      }
     }
+    summary.value = merged
+    notice.value = buildNotice(merged)
+  } finally {
+    busy.value = false
+    doing.value = 0
+    await loadScope()
   }
-  summary.value = merged
-  notice.value = buildNotice(merged)
-  busy.value = false
-  doing.value = 0
-  await loadScope()
 }
 
 function mergeSummary(m, res) {
