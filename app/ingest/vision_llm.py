@@ -252,20 +252,24 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
 
     source_block, diag = _build_source_block(file_path)
 
-    # 1. 优先 Anthropic 视觉通道
+    # 1. 优先 Anthropic 视觉通道（主通道：刀盾）
     data, anthropic_err = _extract_via_anthropic(source_block, diag, doc_type_hint)
     if data:
         return from_dict(data)
 
-    # 2. 备选 OpenAI 兼容视觉通道
+    if anthropic_err:
+        print(f"[Vision OCR] 主通道 (Anthropic/刀盾) 抽取失败: {anthropic_err}，正在尝试自动切换至备用通道 (OpenAI/FluAPI)...")
+
+    # 2. 备选 OpenAI 兼容视觉通道（备用通道：FluAPI）
     if config.OPENAI_API_KEY:
         data, openai_err = _extract_via_openai(file_path, diag, doc_type_hint)
         if data:
+            print("[Vision OCR] 备用通道 (OpenAI/FluAPI) 视觉抽取成功！")
             return from_dict(data)
     else:
         openai_err = None
 
-    err = anthropic_err or openai_err or "视觉抽取解析失败"
+    err = openai_err or anthropic_err or "视觉抽取解析失败"
     if isinstance(err, VisionNotSeeingImageError):
         raise err
     raise ExtractionError(f"视觉抽取失败：{err} {_diag_text(diag)}")
