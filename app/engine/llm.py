@@ -42,6 +42,7 @@ def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[
         if config.LLM_MODEL.startswith("claude") and config.LLM_MODEL not in candidate_models:
             candidate_models.insert(0, config.LLM_MODEL)
 
+        last_exc = None
         for model_name in candidate_models:
             try:
                 resp = client.messages.create(
@@ -52,11 +53,10 @@ def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[
                 if text:
                     return text
             except Exception as exc:
-                err_str = str(exc)
-                if any(k in err_str for k in ("429", "400", "502", "503", "token负载", "暂时不可用")):
-                    time.sleep(1.0)
-                    continue
-                print(f"[LLM] 主通道 (Anthropic - {model_name}) 调用失败: {exc}")
+                last_exc = exc
+                print(f"[LLM] Anthropic/{model_name} 失败: {exc}")
+                time.sleep(0.5)
+                continue  # 所有异常都继续尝试下一个模型
 
     # 2. 备选尝试 OpenAI 兼容协议 (DeepSeek / FluAPI 等)
     if config.OPENAI_API_KEY:

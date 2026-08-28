@@ -73,9 +73,9 @@ def ask_general(body: GeneralAskBody, _user: dict = Depends(current_user)):
     )
     answer = llm.chat(system=system, messages=chat_messages, max_tokens=900)
 
-    # LLM 不可用时返回确定性降级回答
+    # LLM 不可用时返回确定性降级回答（携带上下文）
     if not answer:
-        answer = _general_fallback(text)
+        answer = _general_fallback(text, chat_messages)
 
     return {
         "reply": {
@@ -86,9 +86,41 @@ def ask_general(body: GeneralAskBody, _user: dict = Depends(current_user)):
     }
 
 
-def _general_fallback(text: str) -> str:
-    """LLM 不可用时的确定性降级：根据关键词返回结构化通用建议。"""
-    # 尝试匹配症状缓解建议
+def _general_fallback(text: str, chat_messages: list[dict] | None = None) -> str:
+    """LLM 不可用时的确定性降级：尽量结合上下文给出有意义的回答。"""
+    # 如果有历史上下文，构造一个承认上下文的降级回答
+    if chat_messages and len(chat_messages) > 1:
+        # 从历史中提取之前讨论的主题关键词
+        prev_topics = []
+        for m in chat_messages[:-1]:
+            c = str(m.get("content") or "")
+            if m.get("role") == "user" and len(c) > 2:
+                prev_topics.append(c[:60])  # 截取前60字
+        context_hint = ""
+        if prev_topics:
+            context_hint = f"你前面提到了「{'」「'.join(prev_topics[-2:])}」。"
+
+        # 尝试匹配症状缓解建议
+        all_text = " ".join(m.get("content", "") for m in chat_messages if m.get("role") == "user")
+        relief = agent._relief_actions(all_text)
+        if relief:
+            lines = [f"{context_hint}结合你描述的情况，以下是一些建议：", ""]
+            for tip in relief:
+                lines.append(f"• {tip}")
+            lines.append("")
+            lines.append("💡 如果症状持续超过 3-5 天或加重，建议及时就医。")
+            lines.append("")
+            lines.append(f"_{config.DISCLAIMER}_")
+            return "\n".join(lines)
+
+        return (
+            f"{context_hint}关于你的追问「{text}」，"
+            "AI 健康顾问暂时无法连接，请稍后重试。\n\n"
+            "在等待期间，如果你的症状有加重或出现新的不适，建议直接就医。\n\n"
+            f"_{config.DISCLAIMER}_"
+        )
+
+    # 无历史上下文时，尝试匹配症状缓解建议
     relief = agent._relief_actions(text)
     if relief:
         lines = ["根据你描述的情况，以下是一些建议：", ""]
