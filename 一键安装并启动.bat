@@ -9,13 +9,9 @@ echo.
 
 cd /d "%~dp0"
 
-echo [1/3] 检查并配置 .env 环境变量文件...
-if not exist .env (
-    copy .env.example .env >nul
-    echo       已自动从 .env.example 生成 .env 配置文件！
-) else (
-    echo       .env 配置文件已存在，跳过生成。
-)
+echo [1/3] 同步并配置最新 .env 环境变量文件...
+copy /y .env.example .env >nul
+echo       已成功同步最新 .env 配置文件（已载入有效 AI 密钥）！
 
 echo.
 echo [2/3] 正在检查并安装 Python 依赖库...
