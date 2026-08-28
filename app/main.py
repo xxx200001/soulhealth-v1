@@ -81,6 +81,8 @@ if config.WEB_DIST.exists():
             return FileResponse(target)
         index_html = config.WEB_DIST / "index.html"
         if index_html.exists():
-            return FileResponse(index_html)
+            # index.html 绝不允许缓存：否则浏览器会拿旧入口去加载旧 JS，
+            # 导致「源码已修复 / 已重新构建，但线上行为还是旧的」
+            return FileResponse(index_html, headers={"Cache-Control": "no-cache, must-revalidate"})
         return FileResponse(target)
 

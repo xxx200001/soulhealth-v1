@@ -6,15 +6,38 @@ function token() {
   return localStorage.getItem('sh_token') || ''
 }
 
-// ---- 401 防抖：2 秒内多个并发 401 只触发一次退出登录 ----
+// ---- 401 二次复核：偶发 401（隧道/CDN/并发抖动）绝不直接登出。 ----
+// 收到可疑 401 时，先用现有令牌静默调一次 /api/auth/me 复核：
+//   复核通过(200) → 令牌有效，刚才只是链路抖动，什么都不做；
+//   复核仍是 401  → 令牌确实失效，才清 token 并跳登录页。
+// 复核请求用裸 fetch，避免递归触发本机制。
 let _lastUnauth = 0
-function _triggerUnauthorized() {
+let _verifying = null
+
+function _doLogout() {
   const now = Date.now()
-  if (now - _lastUnauth < 2000) return   // 2秒内去重，防止并发请求多次触发
+  if (now - _lastUnauth < 2000) return   // 2秒去重，防止并发连环触发
   _lastUnauth = now
   localStorage.removeItem('sh_token')
   localStorage.removeItem('sh_user')
   window.dispatchEvent(new CustomEvent('sh:unauthorized'))
+}
+
+function _verifyThenLogout() {
+  if (_verifying) return _verifying      // 并发 401 只复核一次
+  _verifying = (async () => {
+    try {
+      const t = token()
+      if (!t) { _doLogout(); return }
+      const res = await fetch(BASE + '/api/auth/me', {
+        headers: { Authorization: `Bearer ${t}` },
+      })
+      if (res.status === 401) _doLogout()
+      // 其他任何结果（200/5xx/网络失败）都视为「登录未失效」，不登出
+    } catch { /* 网络异常 → 保守起见不登出 */ }
+    finally { _verifying = null }
+  })()
+  return _verifying
 }
 
 async function request(path, options = {}) {
@@ -31,13 +54,9 @@ async function request(path, options = {}) {
   }
   if (res.status === 401) {
     const detail = await detailOf(res)
-    // 只有后端明确返回的「真正认证失效」才退出登录；
-    // 代理层/CDN/网络偶发 401 只抛异常、不清 token、不跳登录页
+    // 登录/注册接口的 401 是「账号密码错误」，与令牌无关，不触发复核
     if (!path.startsWith('/api/auth/login') && !path.startsWith('/api/auth/register')) {
-      const isRealAuthError = /过期|签名|令牌|缺少登录|不存在|已被停用|expired|token|invalid|unauthorized/i.test(detail)
-      if (isRealAuthError) {
-        _triggerUnauthorized()
-      }
+      _verifyThenLogout()   // 不 await：先把错误抛给页面提示，复核在后台进行
     }
     throw new Error(detail || '请求未授权')
   }
