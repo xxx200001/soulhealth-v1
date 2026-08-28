@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
       host: true,
       port: 5173,
       allowedHosts: true,
-      proxy: { '/api': `http://localhost:${port}` },
+      proxy: { '/api': `http://127.0.0.1:${port}` },
     },
     build: { outDir: 'dist', emptyOutDir: true },
   }

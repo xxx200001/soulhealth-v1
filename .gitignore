@@ -35,14 +35,16 @@ web/node_modules/
 .env.*.local
 
 # Database & Runtime Uploads
-data/soulhealth.db
-data/soulhealth.db-journal
+data/*.db*
+data/soulhealth.db*
 data/uploads/*
 !data/uploads/.gitkeep
 
 # Logs & System
 *.log
 tunnel_url.txt
+*_code_dump.txt
+code_dump_*.txt
 soulhealth-v1.1-fixes/
 soulhealth-v1.1-fixes.zip
 .DS_Store

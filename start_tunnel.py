@@ -106,7 +106,7 @@ def main():
         print("[2/3] 启动 Cloudflare 穿透 (指向 http://localhost:8001)...")
         try:
             tunnel_proc = subprocess.Popen(
-                [cloudflared_bin, "tunnel", "--url", "http://localhost:8001"],
+                [cloudflared_bin, "tunnel", "--url", "http://127.0.0.1:8001"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
