@@ -69,5 +69,18 @@ def health() -> dict:
 
 
 if config.WEB_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(config.WEB_DIST), html=True),
-              name="web")
+    from fastapi.responses import FileResponse
+
+    if (config.WEB_DIST / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(config.WEB_DIST / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _serve_spa(full_path: str):
+        target = config.WEB_DIST / full_path
+        if full_path and target.is_file():
+            return FileResponse(target)
+        index_html = config.WEB_DIST / "index.html"
+        if index_html.exists():
+            return FileResponse(index_html)
+        return FileResponse(target)
+
