@@ -6,6 +6,17 @@ function token() {
   return localStorage.getItem('sh_token') || ''
 }
 
+// ---- 401 防抖：2 秒内多个并发 401 只触发一次退出登录 ----
+let _lastUnauth = 0
+function _triggerUnauthorized() {
+  const now = Date.now()
+  if (now - _lastUnauth < 2000) return   // 2秒内去重，防止并发请求多次触发
+  _lastUnauth = now
+  localStorage.removeItem('sh_token')
+  localStorage.removeItem('sh_user')
+  window.dispatchEvent(new CustomEvent('sh:unauthorized'))
+}
+
 async function request(path, options = {}) {
   const headers = { ...(options.headers || {}) }
   if (!(options.body instanceof FormData)) headers['Content-Type'] = 'application/json'
@@ -19,12 +30,16 @@ async function request(path, options = {}) {
     throw new Error('无法连接后端服务。请确认已运行 python run.py')
   }
   if (res.status === 401) {
+    const detail = await detailOf(res)
+    // 只有后端明确返回的「真正认证失效」才退出登录；
+    // 代理层/CDN/网络偶发 401 只抛异常、不清 token、不跳登录页
     if (!path.startsWith('/api/auth/login') && !path.startsWith('/api/auth/register')) {
-      localStorage.removeItem('sh_token')
-      localStorage.removeItem('sh_user')
-      window.dispatchEvent(new CustomEvent('sh:unauthorized'))
+      const isRealAuthError = /过期|签名|令牌|缺少登录|不存在|已被停用|expired|token|invalid|unauthorized/i.test(detail)
+      if (isRealAuthError) {
+        _triggerUnauthorized()
+      }
     }
-    throw new Error(await detailOf(res) || '登录已失效，请重新登录')
+    throw new Error(detail || '请求未授权')
   }
   if (!res.ok) throw new Error(await detailOf(res) || `请求失败 HTTP ${res.status}`)
   if (res.status === 204) return null

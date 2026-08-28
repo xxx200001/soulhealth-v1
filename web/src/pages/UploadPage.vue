@@ -478,7 +478,7 @@ async function retry(r) {
     const res = await api.retryReport(r.id)
     Object.assign(r, res)
     await loadScope()
-  } catch (e) { alert(e.message) }
+  } catch (e) { alert('重试失败，请稍后再试') }
 }
 
 async function loadScope() {

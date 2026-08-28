@@ -63,7 +63,13 @@ def retry(rid: str, user: dict = Depends(current_user)):
     if r["status"] not in ("failed", "uploaded"):
         raise HTTPException(409, f"当前状态 {r['status']} 无需重试")
     repo.set_report_status(rid, "uploaded", error="")
-    return pipeline.process_report(rid)
+    try:
+        return pipeline.process_report(rid)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        repo.set_report_status(rid, "failed", error=str(exc))
+        raise HTTPException(500, f"识别处理失败：{exc}")
 
 
 class Confirmation(BaseModel):
