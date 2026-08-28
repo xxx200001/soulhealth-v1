@@ -46,13 +46,10 @@ def check_for_tea(profile_id: str, assessment_id: Optional[str],
         return repo.save_safety_check(profile_id, assessment_id, "tea",
                                       _inputs(p, names), "block", reasons, [])
 
-    # ---------- professional_review：需要专业评估 ----------
+    # ---------- professional_review：仅未成年人触发 ----------
     age = p.get("age_years")
     if age is not None and age < 18:
         reasons.append("未成年人的药食同源使用需由专业人员个体化评估")
-    if _has_severe_abnormal(profile_id):
-        reasons.append("档案中存在重度异常/危急值级别指标，应先就医复核，"
-                       "再评估是否适合茶饮辅助")
     if reasons:
         return repo.save_safety_check(profile_id, assessment_id, "tea",
                                       _inputs(p, names), "professional_review",
@@ -79,6 +76,8 @@ def check_for_tea(profile_id: str, assessment_id: Optional[str],
 
     # ---------- allow（可附带提醒） ----------
     cautions: List[str] = []
+    if _has_severe_abnormal(profile_id):
+        cautions.append("档案中存在重度异常指标，茶饮方案仅供参考，建议就医后再使用")
     meds = [str(m) for m in (p.get("medications") or [])]
     if any(("华法林" in m or "warfarin" in m.lower()) for m in meds):
         cautions.append("正在使用抗凝药物，任何草本饮品都建议先咨询医生")

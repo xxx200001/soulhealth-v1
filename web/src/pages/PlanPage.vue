@@ -116,8 +116,8 @@
     <template v-else-if="tea">
       <SafetyNotice :status="tea.safety_status" class="fade-in" />
 
-      <!-- allow：完整方案 -->
-      <template v-if="tea.safety_status === 'allow'">
+      <!-- allow 或历史方案：都显示完整内容 -->
+      <template v-if="tea.safety_status === 'allow' || tea.status !== 'active' || p.ingredients?.length">
         <section class="card fade-in teacard">
           <div class="row-between">
             <div>
