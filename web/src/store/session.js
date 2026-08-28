@@ -8,6 +8,8 @@ export const useSessionStore = defineStore('session', {
     profile: null,
     health: null,
     loading: false,
+    _ensureChecked: false,   // ensureProfile 是否成功拿到过服务端结果
+    _ensureEmpty: false,     // 服务端确认过该用户没有任何档案
   }),
   getters: {
     hasProfile: (s) => !!s.profileId,
@@ -35,13 +37,10 @@ export const useSessionStore = defineStore('session', {
       this.loading = true
       try {
         this.profile = await api.getProfile(this.profileId)
-      } catch (e) {
-        // 只有后端明确返回「档案不存在」(404) 才清除本地选中状态；
-        // 网络波动/超时/代理错误 → 保留本地 profile 不清除，防止闪退
-        if (/档案不存在|404/.test(e.message) && !/无法连接|timeout|network/i.test(e.message)) {
-          this.clear()
-        }
-        // 其他错误（网络断连等）静默保留当前状态
+      } catch {
+        // 【绝不 clear】—— 无论什么错误（404/500/超时/网络断连），
+        // 都保留本地 profileId 不清除，防止任何闪退。
+        // 最坏情况：页面显示空数据，用户手动刷新即可。
       } finally {
         this.loading = false
       }
@@ -56,8 +55,18 @@ export const useSessionStore = defineStore('session', {
       if (this.profileId) return this.refresh()
       try {
         const r = await api.listProfiles()
-        if (r.items?.length) await this.select(r.items[0].id)
-      } catch { /* 保持未选择，路由会引导到 onboard */ }
+        this._ensureChecked = true  // API 调用成功了
+        if (r.items?.length) {
+          await this.select(r.items[0].id)
+          this._ensureEmpty = false
+        } else {
+          this._ensureEmpty = true   // 服务端确认：该用户确实没有档案
+        }
+      } catch {
+        // API 失败（500/超时/网络断连）—— 不标记 ensureEmpty，
+        // 路由守卫会放行，让页面自己显示空状态而不是跳走
+        this._ensureChecked = false
+      }
       return this.profile
     },
   },

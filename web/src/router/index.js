@@ -54,13 +54,16 @@ router.beforeEach(async (to) => {
   if (!to.meta.public && !hasToken) return { path: '/login', query: { r: to.fullPath } }
   if (to.path === '/login' && hasToken) return { path: '/' }
 
-  // 所有数据都归属档案：如果已登录但本地没有选定档案，尝试先从服务端自动加载已有档案
+  // 需要档案的页面：尝试自动加载，但【绝不因失败而跳转】
   if (to.meta.needProfile && hasToken && !localStorage.getItem('sh_pid')) {
     try {
       const session = useSessionStore()
       await session.ensureProfile()
-    } catch { /* ignore */ }
-    if (!localStorage.getItem('sh_pid')) {
+    } catch { /* 网络/服务异常，静默放行 */ }
+    // 只有服务端明确确认「该用户没有任何档案」时才引导到创建页面
+    // API 失败（500/超时/断网）→ 直接放行，页面自己显示空状态
+    const session = useSessionStore()
+    if (!localStorage.getItem('sh_pid') && session._ensureChecked && session._ensureEmpty) {
       return { path: '/onboard' }
     }
   }
