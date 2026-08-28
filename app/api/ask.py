@@ -63,27 +63,55 @@ def ask_general(body: GeneralAskBody, _user: dict = Depends(current_user)):
         "2. 用户在提问中使用代词或省略句时（如「这个」、「它」、「上述情况」、「这样」、「为什么会这样」、「会有什么后果」等），"
         "代词指代的一定是前文讨论的核心主题（例如前文讨论的「熬夜」、「右侧肋骨疼痛」、「高尿酸」等）。\n"
         "3. 【严禁反问指代】：绝对不要反问「你指的这个是什么」或「我没有上下文」，必须直接将代词还原为前文主题并给出深度解答！\n"
-        "   例如：前文讨论「熬夜」，用户问「我头疼和这个有关系吗」，你必须直接分析「熬夜与头痛的直接关联（神经血管性头痛、睡眠剥夺、脑血管痉挛、肌肉紧张等）」，并给出针对性的缓解建议与就医指征！\n"
         "4. 【深入针对性分析】：分析当前具体症状机制、器官关联与生理反应。\n"
         "5. 【生活与自我照护】：给出清晰实用的日常建议（饮食禁忌、体位姿势、作息与活动注意点）。\n"
         "6. 【明确就医边界】：列出需要立即去医院就诊的警示指征及建议挂号科室。\n"
         "7. 【严谨负责】：不做确定性临床诊断，不开处方药，不编造数据。\n"
         "8. 回答末尾附一句简短的免责提示。\n"
+        "9. 【追问引导 - 必须执行】：在回答的最末尾，另起一行，以 `[追问建议]` 开头，"
+        "用 `|` 分隔给出 2~4 个与当前话题直接相关的追问选项，帮助用户一键继续深入。"
+        "追问选项要具体、简短（≤15字），紧扣当前症状/话题。例如：\n"
+        "  [追问建议] 钝痛|绞痛|刺痛|胀痛\n"
+        "  [追问建议] 饭后会加重|深呼吸会加重|和运动有关\n"
+        "  [追问建议] 需要做什么检查|平时饮食注意什么|会不会很严重\n\n"
         "请用清晰排版、有重点标注的 Markdown 中文直接作答。"
     )
-    answer = llm.chat(system=system, messages=chat_messages, max_tokens=900)
+    answer = llm.chat(system=system, messages=chat_messages, max_tokens=1000)
 
     # LLM 不可用时返回确定性降级回答（携带上下文）
     if not answer:
         answer = _general_fallback(text, chat_messages)
 
+    # 从回答中提取追问选项
+    options = _extract_options(answer)
+    if options:
+        # 移除回答中的 [追问建议] 行
+        import re
+        answer = re.sub(r'\n*\[追问建议\].*$', '', answer, flags=re.MULTILINE).rstrip()
+
     return {
         "reply": {
             "kind": "answer",
             "text": answer,
+            "options": options,
             "disclaimer": config.DISCLAIMER,
         }
     }
+
+
+import re as _re
+
+def _extract_options(text: str) -> list[str]:
+    """从 LLM 回答末尾提取 [追问建议] 行中的选项列表。"""
+    if not text:
+        return []
+    for line in reversed(text.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("[追问建议]"):
+            raw = line[len("[追问建议]"):].strip()
+            opts = [o.strip() for o in raw.split("|") if o.strip()]
+            return opts[:4]  # 最多4个
+    return []
 
 
 def _general_fallback(text: str, chat_messages: list[dict] | None = None) -> str:

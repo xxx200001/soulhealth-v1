@@ -1,1 +1,0 @@
-import{o,c as n,b as e,t as s,D as c}from"./index-DInTvQu6.js";const r={class:"empty"},i={class:"icon"},d={__name:"EmptyState",props:{icon:{type:String,default:"○"},text:{type:String,default:"暂无内容"}},setup(t){return(a,l)=>(o(),n("div",r,[e("span",i,s(t.icon),1),e("div",null,s(t.text),1),c(a.$slots,"default")]))}};export{d as _};

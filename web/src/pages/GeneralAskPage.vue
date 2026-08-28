@@ -16,6 +16,12 @@
 
         <div v-else class="msg msg-ai fade-in" :class="{ danger: m.kind === 'red_flag' }">
           <MarkdownView :source="m.content" />
+
+          <!-- 追问快捷按钮：只在最后一条 AI 回复且不在思考中时显示 -->
+          <div v-if="m.options?.length && i === messages.length - 1 && !busy"
+               class="row wrap" style="margin-top: 10px">
+            <button v-for="o in m.options" :key="o" class="chip" @click="send(o)">{{ o }}</button>
+          </div>
         </div>
       </template>
 
@@ -105,6 +111,7 @@ async function send(text) {
     const r = res.reply
     messages.value.push({
       role: 'assistant', kind: r.kind, content: r.text,
+      options: r.options || [],
     })
     answered.value = true
   } catch (e) {
