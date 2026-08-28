@@ -36,7 +36,12 @@ export const useSessionStore = defineStore('session', {
       try {
         this.profile = await api.getProfile(this.profileId)
       } catch (e) {
-        if (/不存在/.test(e.message)) this.clear()
+        // 只有后端明确返回「档案不存在」(404) 才清除本地选中状态；
+        // 网络波动/超时/代理错误 → 保留本地 profile 不清除，防止闪退
+        if (/档案不存在|404/.test(e.message) && !/无法连接|timeout|network/i.test(e.message)) {
+          this.clear()
+        }
+        // 其他错误（网络断连等）静默保留当前状态
       } finally {
         this.loading = false
       }
