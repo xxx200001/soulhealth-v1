@@ -151,29 +151,42 @@ class IndicatorMeta:
         )
 
     # ---------------- 校验 ----------------
-    def is_plausible(self, value: float) -> bool:
-        lo, hi = self.plausible_range
-        return lo <= value <= hi
+    def is_plausible(self, value: Any) -> bool:
+        try:
+            val = float(value)
+            lo, hi = self.plausible_range
+            return lo <= val <= hi
+        except (ValueError, TypeError):
+            return False
 
-    def is_critical(self, value: float) -> bool:
-        if self.critical_low is not None and value <= self.critical_low:
-            return True
-        if self.critical_high is not None and value >= self.critical_high:
-            return True
-        return False
+    def is_critical(self, value: Any) -> bool:
+        try:
+            val = float(value)
+            if self.critical_low is not None and val <= self.critical_low:
+                return True
+            if self.critical_high is not None and val >= self.critical_high:
+                return True
+            return False
+        except (ValueError, TypeError):
+            return False
 
-    def convert_to_canonical(self, value: float, unit: Optional[str]) -> Optional[float]:
+    def convert_to_canonical(self, value: Any, unit: Optional[str]) -> Optional[float]:
         """可安全换算时返回标准化值；单位未知/不可换算返回 None（F-DATA-02：
         趋势比较不得混用不可比单位）。"""
+        try:
+            val = float(value)
+        except (ValueError, TypeError):
+            return None
+
         if unit is None or not str(unit).strip():
-            return value  # 无单位视作已是 canonical（报告常省略单位）
+            return val  # 无单位视作已是 canonical（报告常省略单位）
         u = normalize_alias(unit)
         cu = normalize_alias(self.canonical_unit)
         if u == cu:
-            return value
+            return val
         for k, factor in self.unit_conversions.items():
             if normalize_alias(k) == u:
-                return value * float(factor)
+                return val * float(factor)
         return None
 
     # ---------------- RCV ----------------

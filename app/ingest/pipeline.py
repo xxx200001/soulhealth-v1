@@ -71,7 +71,14 @@ def process_report(report_id: str) -> dict:
         if not match.matched and raw_name:
             match = lexicon.lookup(raw_name)
 
-        value_num = o.get("value_num")
+        raw_val = o.get("value_num")
+        value_num = None
+        if raw_val is not None and str(raw_val).strip() != "":
+            try:
+                value_num = float(raw_val)
+            except (ValueError, TypeError):
+                value_num = None
+
         unit = o.get("unit")
         canonical_value = canonical_unit = None
         grade = 0
@@ -85,7 +92,7 @@ def process_report(report_id: str) -> dict:
             confidence = match.confidence
             meta = registry.get(code)
             if meta and value_num is not None:
-                cv = meta.convert_to_canonical(float(value_num), unit)
+                cv = meta.convert_to_canonical(value_num, unit)
                 # 量级自动纠错（迁移自第二套：magnitude_fix）
                 if cv is not None and not meta.is_plausible(cv) and meta.magnitude_fix:
                     for f in (0.001, 1000.0):
@@ -100,7 +107,7 @@ def process_report(report_id: str) -> dict:
                     confidence = 0.0  # 超生理极限：拒绝入趋势，仅原样留档
         elif value_num is not None:
             # 未标准化：以报告自带参考范围兜底分级，仍可展示但不进跨报告比较
-            grade = grade_from_ref(float(value_num), o.get("ref_low"),
+            grade = grade_from_ref(value_num, o.get("ref_low"),
                                    o.get("ref_high"))
 
         needs_confirm = 1 if (0 < confidence < _CONFIRM_BELOW) else 0
