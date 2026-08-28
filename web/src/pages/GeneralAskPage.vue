@@ -91,11 +91,17 @@ async function send(text) {
   const content = (text ?? draft.value).trim()
   if (!content || busy.value) return
   draft.value = ''
+  
+  // 收集历史对话（保留纯净的 user / assistant 消息体）
+  const history = messages.value
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.kind !== 'error')
+    .map((m) => ({ role: m.role, content: m.content }))
+
   messages.value.push({ role: 'user', content })
   busy.value = true
   scrollBottom()
   try {
-    const res = await api.askGeneral(content)
+    const res = await api.askGeneral(content, history)
     const r = res.reply
     messages.value.push({
       role: 'assistant', kind: r.kind, content: r.text,

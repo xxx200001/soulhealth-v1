@@ -16,12 +16,23 @@ def available() -> bool:
     return config.LLM_MODE == "real" and bool(config.ANTHROPIC_API_KEY or config.OPENAI_API_KEY)
 
 
-def complete(system: str, user: str, max_tokens: int = 900) -> Optional[str]:
-    """单轮补全。支持主通道(Anthropic/刀盾)失败时自动无缝降级至备用通道(OpenAI/FluAPI)。"""
-    if not available():
+def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[str]:
+    """多轮对话补全。支持完整上下文历史，优先 Anthropic，失败自动切换 OpenAI 协议。"""
+    if not available() or not messages:
         return None
 
-    # 1. 优先尝试 Anthropic Claude 协议（主通道：如刀盾）
+    # 清理并规范化 messages 格式，确保只包含 role (user/assistant) 和 content (str)
+    formatted = []
+    for m in messages:
+        role = "assistant" if m.get("role") in ("assistant", "ai") else "user"
+        content = str(m.get("content") or "").strip()
+        if content:
+            formatted.append({"role": role, "content": content})
+
+    if not formatted:
+        return None
+
+    # 1. 优先尝试 Anthropic Claude 协议
     if config.ANTHROPIC_API_KEY:
         import anthropic
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
@@ -36,21 +47,19 @@ def complete(system: str, user: str, max_tokens: int = 900) -> Optional[str]:
             try:
                 resp = client.messages.create(
                     model=model_name, max_tokens=max_tokens, system=system,
-                    messages=[{"role": "user", "content": user}])
+                    messages=formatted)
                 text = "".join(b.text for b in resp.content
                                if getattr(b, "type", "") == "text").strip()
                 if text:
                     return text
             except Exception as exc:
                 err_str = str(exc)
-                if "429" in err_str or "400" in err_str or "token负载" in err_str or "暂时不可用" in err_str:
-                    import time
+                if any(k in err_str for k in ("429", "400", "502", "503", "token负载", "暂时不可用")):
                     time.sleep(1.0)
                     continue
-                print(f"[LLM] 主通道 (Anthropic/刀盾 - {model_name}) 调用失败: {exc}")
-        print("[LLM] 主通道所有候选模型均不可用，正在尝试自动切换至备用通道 (OpenAI/FluAPI)...")
+                print(f"[LLM] 主通道 (Anthropic - {model_name}) 调用失败: {exc}")
 
-    # 2. 备选尝试 OpenAI 兼容协议（备用通道：如 FluAPI）
+    # 2. 备选尝试 OpenAI 兼容协议 (DeepSeek / FluAPI 等)
     if config.OPENAI_API_KEY:
         try:
             import json
@@ -66,7 +75,7 @@ def complete(system: str, user: str, max_tokens: int = 900) -> Optional[str]:
                 "model": config.OPENAI_MODEL,
                 "messages": [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": user},
+                    *formatted,
                 ],
                 "max_tokens": max_tokens,
                 "temperature": 0.3,
@@ -79,10 +88,14 @@ def complete(system: str, user: str, max_tokens: int = 900) -> Optional[str]:
                 data = json.loads(resp.read().decode("utf-8"))
                 content = data["choices"][0]["message"]["content"].strip()
                 if content:
-                    print("[LLM] 备用通道 (OpenAI/FluAPI) 调用成功！")
                     return content
         except Exception as exc:
-            print(f"[LLM] 备用通道 (OpenAI/FluAPI) 调用亦失败: {exc}")
+            print(f"[LLM] 备用通道 (OpenAI) 调用失败: {exc}")
 
     return None
+
+
+def complete(system: str, user: str, max_tokens: int = 900) -> Optional[str]:
+    """单轮补全。"""
+    return chat(system=system, messages=[{"role": "user", "content": user}], max_tokens=max_tokens)
 

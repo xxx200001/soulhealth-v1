@@ -18,8 +18,9 @@ class AskBody(BaseModel):
 
 
 class GeneralAskBody(BaseModel):
-    """通用健康问答（不绑定档案），首页入口使用。"""
+    """通用健康问答（不绑定档案），首页入口使用。支持多轮连续对话上下文。"""
     text: str = Field(min_length=1, max_length=1000)
+    messages: list[dict] | None = None
 
 
 @router.post("")
@@ -31,8 +32,8 @@ def ask(body: AskBody, user: dict = Depends(current_user)):
 
 @router.post("/general")
 def ask_general(body: GeneralAskBody, _user: dict = Depends(current_user)):
-    """通用健康问答：不查档案、不追问槽位，直接用 LLM 回答常见健康问题。
-    适用于首页入口，让用户无需任何历史数据也能获得有价值的健康指导。"""
+    """通用健康问答：不查档案，结合多轮对话上下文历史，直接用 LLM 智能解答。
+    适用于首页入口，让用户无需任何历史数据也能获得连贯、有深度、个性化的健康指导。"""
     text = body.text.strip()
 
     # 红旗检测（紧急情况无论在哪个入口都要拦截）
@@ -41,18 +42,34 @@ def ask_general(body: GeneralAskBody, _user: dict = Depends(current_user)):
         reply = agent._red_flag_reply(red)
         return {"reply": reply}
 
-    # LLM 可用时走大模型
+    # 构造包含多轮上下文历史的对话列表
+    chat_messages = []
+    if body.messages:
+        for m in body.messages[-10:]:  # 保留最近 10 轮对话上下文
+            r = "assistant" if m.get("role") in ("assistant", "ai") else "user"
+            c = str(m.get("content") or "").strip()
+            if c:
+                chat_messages.append({"role": r, "content": c})
+
+    # 确保当前这条在消息末尾
+    if not chat_messages or chat_messages[-1].get("content") != text:
+        chat_messages.append({"role": "user", "content": text})
+
+    # LLM 可用时走多轮大模型问答
     system = (
-        "你是一位专业、温暖的健康管理顾问。用户向你咨询日常健康问题，"
-        "请用通俗易懂的中文直接回答。回答应当：\n"
-        "1. 简明扼要，条理清晰，适当分段\n"
-        "2. 给出具体可操作的生活建议（饮食、运动、作息等）\n"
-        "3. 涉及症状时提醒就医边界（什么情况应该去看医生）\n"
-        "4. 不做诊断、不开处方、不编造数据\n"
-        "5. 回答末尾附一句简短的免责提示\n"
-        "保持亲切专业的语气，像一位靠谱的健康顾问朋友在给建议。"
+        "你是一位专业、温暖、严谨的健康管理顾问。用户正在与你进行多轮连续健康咨询，"
+        "你必须结合之前的对话历史来理解用户的回答、补充描述与连续提问。\n\n"
+        "回答要求：\n"
+        "1. 【上下文记忆与承接】：紧密结合前文已知信息（如用户前文提到的部位、发病时长、症状特点等）。"
+        "若前文已经明确了部位（如已说过右侧肋骨/左肋骨等），绝对不要再重复询问「是哪个部位」，而是直接基于该部位展开深入分析！\n"
+        "2. 【针对性分析】：分析当前具体症状表现（如持续钝痛 vs 阵发绞痛）对应的可能原因、生理机制与器官关联。\n"
+        "3. 【生活与自我照护】：给出清晰实用的日常建议（饮食禁忌、体位姿势、休息与活动注意点）。\n"
+        "4. 【明确就医边界】：列出需要立即去医院就诊的警示指征及建议挂号科室（如普外科/消化内科/骨科/胸外科等）。\n"
+        "5. 【严谨负责】：不做确定性临床诊断，不开处方药，不编造数据。\n"
+        "6. 回答末尾附一句简短的免责提示。\n"
+        "请用清晰排版、有重点标注的 Markdown 中文直接作答。"
     )
-    answer = llm.complete(system=system, user=text, max_tokens=800)
+    answer = llm.chat(system=system, messages=chat_messages, max_tokens=900)
 
     # LLM 不可用时返回确定性降级回答
     if not answer:
