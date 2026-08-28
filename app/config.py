@@ -56,7 +56,7 @@ ANTHROPIC_BASE_URL: str = os.getenv("ANTHROPIC_BASE_URL",
                                     "https://api.anthropic.com").strip()
 VISION_MODEL: str = (os.getenv("VISION_MODEL")
                      or os.getenv("SOULHEALTH_VISION_MODEL")
-                     or "claude-opus-4-6").strip()
+                     or "claude-sonnet-4-6").strip()
 LLM_MODEL: str = (os.getenv("SOULHEALTH_LLM_MODEL")
                   or os.getenv("LLM_MODEL")
                   or "deepseek-chat").strip()
@@ -75,9 +75,8 @@ LLM_MODE: str = "mock" if MOCK_MODE else ("real" if (ANTHROPIC_API_KEY or OPENAI
 
 OCR_ENGINE: str = os.getenv("SOULHEALTH_OCR_ENGINE", "vision_llm").strip() or "vision_llm"
 
-# 单次上传份数上限：批次过大（如一次 15 张照片）容易请求超时/整批失败，
-# 前后端共同按此限流，前端会把多选自动拆成多批（F-UP 反馈修复）
-MAX_UPLOAD_BATCH: int = int(os.getenv("SOULHEALTH_MAX_UPLOAD_BATCH", "5"))
+# 单次上传份数上限：限制为 3 份，配合前端并发极速识别，防止超时与长队
+MAX_UPLOAD_BATCH: int = int(os.getenv("SOULHEALTH_MAX_UPLOAD_BATCH", "3"))
 
 # LLM 上下文与成本控制（规格书 §8）
 AGENT_CONTEXT_MAX_OBS: int = int(os.getenv("SOULHEALTH_AGENT_MAX_OBS", "24"))

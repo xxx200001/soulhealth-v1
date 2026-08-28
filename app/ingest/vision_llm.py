@@ -171,45 +171,30 @@ def _build_source_blocks(file_path: Path) -> Tuple[List[dict], dict]:
                   "source": {"type": "base64", "media_type": media_type, "data": b64}}],
                 diag)
 
-    # 图像智能处理：EXIF 自动回正 + 多尺度/分栏高清切片
+    # 图像智能高效预处理：EXIF 自动回正 + 对比度/锐度增强 + 极速单图高精输入
     try:
         import io
         from PIL import Image, ImageOps, ImageEnhance
         im = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
         w, h = im.size
         
-        blocks = []
-        def _to_block(pil_img, quality=80):
-            buf = io.BytesIO()
-            pil_img.save(buf, format="JPEG", quality=quality, optimize=True)
-            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-            return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": encoded}}
-
-        # 若为较宽的双栏化验单据，采用【左右双栏增强切片 + 整页全景】
-        if w >= 600 and (w / float(h) >= 0.65):
-            mid = int(w * 0.51)
-            overlap = int(w * 0.05)
-            left_crop = im.crop((0, 0, min(w, mid + overlap), h))
-            right_crop = im.crop((max(0, mid - overlap), 0, w, h))
+        # 限制长边至 1600px，兼顾极端细小文字清晰度与秒级推理速度
+        max_dim = 1600
+        if max(w, h) > max_dim:
+            scale = max_dim / float(max(w, h))
+            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
             
-            left_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(left_crop, cutoff=0.5)).enhance(1.2).convert("RGB")
-            right_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(right_crop, cutoff=0.5)).enhance(1.2).convert("RGB")
-            
-            blocks.append({"type": "text", "text": "【图片 1：左半栏（序号 1~16 全部项目）】请按序号 1~16 自上而下识别："})
-            blocks.append(_to_block(left_enh, quality=85))
-            blocks.append({"type": "text", "text": "【图片 2：右半栏（序号 17~32 全部项目）】请按序号 17~32 自上而下识别："})
-            blocks.append(_to_block(right_enh, quality=85))
-            blocks.append({"type": "text", "text": "【图片 0：化验单完整原图全景】用于确认报告日期与全局版式："})
-            blocks.append(_to_block(im, quality=75))
-        else:
-            opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=85)
-            b64 = base64.b64encode(opt_data).decode("ascii")
-            blocks.append({"type": "image", "source": {"type": "base64", "media_type": opt_mime, "data": b64}})
-            
-        diag["blocks_count"] = len(blocks)
-        return blocks, diag
+        # 适度增强锐度与对比度，让化验单表格与数值更易被 OCR 识别
+        im_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(im, cutoff=0.3)).enhance(1.15)
+        
+        buf = io.BytesIO()
+        im_enh.save(buf, format="JPEG", quality=80, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        
+        diag["blocks_count"] = 1
+        return ([{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}}], diag)
     except Exception:
-        opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=85)
+        opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=80)
         b64 = base64.b64encode(opt_data).decode("ascii")
         return ([{"type": "image", "source": {"type": "base64", "media_type": opt_mime, "data": b64}}], diag)
 

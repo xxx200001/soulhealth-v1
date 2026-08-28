@@ -4,7 +4,7 @@
     <section class="card fade-in">
       <div class="card-title"><span class="dot"></span>上传健康资料</div>
       <p class="muted" style="margin: 6px 0 var(--sp-3)">
-        支持图片 / 拍照 / PDF，可一次选择多份；每份资料独立识别、独立入档
+        支持图片 / 拍照 / PDF，单次建议选择 1~3 份；每份独立高精识别、秒级入档
       </p>
 
       <label class="drop" :class="{ busy }">
@@ -12,8 +12,8 @@
                :disabled="busy" @change="onPick" />
         <span v-if="!busy" class="drop-ico" v-html="icoUp"></span>
         <span v-else class="spin"></span>
-        <b>{{ busy ? `正在上传识别 第 ${doing}/${total} 份…` : '点击选择文件（可多选）' }}</b>
-        <span class="tiny">多份资料会自动排队逐份上传识别，一份失败不影响其他；
+        <b>{{ busy ? `正在极速并发识别中（共 ${total} 份）…` : '点击选择文件（单次建议 1~3 份）' }}</b>
+        <span class="tiny">系统将自动并发识别并入档，一份失败不影响其他；
           原件完整保存，识别结果可随时回溯</span>
       </label>
       <div v-if="busy" class="bar" style="margin-top: var(--sp-3)">
@@ -307,8 +307,8 @@ function statusBadge(s) {
            failed: 'badge-danger' }[s] || 'badge-quiet'
 }
 
-// 单次选择的份数上限（防止极端批次）；上传本身逐份排队，单份失败不影响其他
-const MAX_PICK = 20
+// 单次选择的份数上限（保障秒级并发识别与防止超时）；并发上传，单份失败不影响其他
+const MAX_PICK = 3
 
 async function onPick(e) {
   let files = [...e.target.files]
@@ -318,7 +318,7 @@ async function onPick(e) {
   if (files.length > MAX_PICK) {
     files = files.slice(0, MAX_PICK)
     notice.value = { type: 'warn',
-      text: `一次最多选择 ${MAX_PICK} 份，已保留前 ${MAX_PICK} 份开始识别，其余请稍后再传` }
+      text: `为了保障秒级极速识别与稳定性，单次最多选择 ${MAX_PICK} 份；已为您保留前 ${MAX_PICK} 份开始并发识别，其余资料请稍后上传` }
   }
   busy.value = true
   total.value = files.length
@@ -328,24 +328,26 @@ async function onPick(e) {
   const merged = { total: 0, ready: 0, needs_confirmation: 0, failed: 0,
                    observations: 0, comparable_codes: 0, date_span: null }
   try {
-    for (const f of files) {
-      doing.value += 1
+    // 并发快速处理（避免单线排队超时）
+    const tasks = files.map(async (f) => {
       try {
         const res = await api.uploadReports(session.profileId, [f])
         mergeSummary(merged, res)
         await hydrate(res.reports)
       } catch (err) {
-        // 请求本身失败（网络/超时）：文件未到达服务端，保留在列表中可重传
         merged.total += 1
         merged.failed += 1
         items.value.push({
           id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
           status: 'failed', source_filename: f.name,
-          error: `上传请求失败：${err.message}`,
+          error: `上传解析失败：${err.message}`,
           _local: true, _file: f, _lowObs: [], _saving: false, _fileUrl: '',
         })
+      } finally {
+        doing.value += 1
       }
-    }
+    })
+    await Promise.allSettled(tasks)
     summary.value = merged
     notice.value = buildNotice(merged)
   } finally {
