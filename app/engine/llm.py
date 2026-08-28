@@ -37,11 +37,10 @@ def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[
         import anthropic
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
                                      base_url=config.ANTHROPIC_BASE_URL,
-                                     timeout=15.0)
-        candidate_models = [config.LLM_MODEL]
-        for m in ("claude-sonnet-4-6", "claude-sonnet-5"):
-            if m not in candidate_models:
-                candidate_models.append(m)
+                                     timeout=45.0)
+        candidate_models = ["claude-sonnet-4-6", "claude-sonnet-5", "claude-opus-4-6"]
+        if config.LLM_MODEL.startswith("claude") and config.LLM_MODEL not in candidate_models:
+            candidate_models.insert(0, config.LLM_MODEL)
 
         for model_name in candidate_models:
             try:
