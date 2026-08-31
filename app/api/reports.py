@@ -54,6 +54,7 @@ def list_reports(profile_id: str, user: dict = Depends(current_user)):
 def get_report(rid: str, user: dict = Depends(current_user)):
     r = scoped_report(rid, user)
     r["observations"] = repo.list_observations_by_report(rid)
+    r["findings"] = repo.list_findings_by_report(rid)
     return r
 
 

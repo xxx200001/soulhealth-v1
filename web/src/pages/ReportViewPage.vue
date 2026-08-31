@@ -122,11 +122,22 @@
     </section>
 
     <!-- 检查所见 -->
-    <section v-if="report.findings?.length" class="card fade-in">
-      <div class="card-title"><span class="dot"></span>检查所见</div>
-      <div v-for="(f, i) in report.findings" :key="i" class="finding">
+    <section v-if="examFindings.length" class="card fade-in">
+      <div class="card-title"><span class="dot"></span>检查所见（{{ examFindings.length }} 项）</div>
+      <div v-for="(f, i) in examFindings" :key="'f'+i" class="finding">
         <b>{{ f.organ }}</b>
         <p>{{ f.description }}</p>
+        <div v-if="f.flags?.length" class="finding-flags">
+          <span v-for="(fl, j) in f.flags" :key="j" class="flag-tag">{{ fl }}</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 诊断意见 -->
+    <section v-if="impressionFindings.length" class="card fade-in">
+      <div class="card-title"><span class="dot" style="background:#e67e22"></span>诊断意见（{{ impressionFindings.length }} 条）</div>
+      <div v-for="(f, i) in impressionFindings" :key="'imp'+i" class="impression-item">
+        {{ f.description }}
       </div>
     </section>
 
@@ -161,6 +172,12 @@ const showLightbox = ref(false)
 
 const isPdf = computed(() =>
   (report.value?.source_filename || '').toLowerCase().endsWith('.pdf'))
+
+const examFindings = computed(() =>
+  (report.value?.findings || []).filter(f => !f.flags?.includes('impression')))
+
+const impressionFindings = computed(() =>
+  (report.value?.findings || []).filter(f => f.flags?.includes('impression')))
 
 function typeCN(t) {
   return {
@@ -255,4 +272,14 @@ onBeforeUnmount(() => { if (fileUrl.value) URL.revokeObjectURL(fileUrl.value) })
 .lightbox-body { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center;
   background: #111; padding: var(--sp-4); }
 .lightbox-img { max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+
+/* 检查所见标签 */
+.finding-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.flag-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+
+/* 诊断意见条目 */
+.impression-item { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px;
+  color: var(--ink-700); line-height: 1.6; }
+.impression-item:last-child { border-bottom: none; }
 </style>

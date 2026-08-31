@@ -1,0 +1,508 @@
+{
+  "document_type": "clinical_note",
+  "exam_date": "2026-08-11",
+  "patient": {
+    "sex": "male",
+    "age_years": 51
+  },
+  "exam_info": {
+    "modality": "健康体检",
+    "regions": [
+      "全身"
+    ],
+    "device": null,
+    "fasting": null
+  },
+  "findings": [
+    {
+      "organ": "肝脏",
+      "description": "肝脏形态欠规则，肝脏见小低密度影。",
+      "flags": [
+        "形态欠规则",
+        "低密度影"
+      ]
+    },
+    {
+      "organ": "肾脏",
+      "description": "左肾囊肿，左肾见小低密度影。",
+      "flags": [
+        "左肾囊肿",
+        "低密度影"
+      ]
+    },
+    {
+      "organ": "心脏与大血管",
+      "description": "左房增大伴轻度二尖瓣关闭不全；主动脉根部内径稍宽伴轻度主动脉瓣关闭不全；室间隔基底部增厚。",
+      "flags": [
+        "左房增大",
+        "二尖瓣关闭不全",
+        "主动脉根部内径稍宽",
+        "主动脉瓣关闭不全",
+        "室间隔基底部增厚"
+      ]
+    },
+    {
+      "organ": "血管系统",
+      "description": "双侧颈动脉粥样斑块形成；双侧髂动脉局部管壁钙化斑块；腹主动脉局部钙化；动脉硬化，I级。",
+      "flags": [
+        "粥样斑块形成",
+        "管壁钙化斑块",
+        "动脉硬化"
+      ]
+    },
+    {
+      "organ": "肺部",
+      "description": "两肺微小结节，两肺少许慢性炎症。",
+      "flags": [
+        "微小结节",
+        "慢性炎症"
+      ]
+    },
+    {
+      "organ": "甲状腺",
+      "description": "右侧甲状腺结节。",
+      "flags": [
+        "甲状腺结节"
+      ]
+    },
+    {
+      "organ": "前列腺",
+      "description": "前列腺钙化灶。",
+      "flags": [
+        "钙化灶"
+      ]
+    },
+    {
+      "organ": "肠系膜",
+      "description": "肠系膜血管向右旋转不良。",
+      "flags": [
+        "旋转不良"
+      ]
+    },
+    {
+      "organ": "五官",
+      "description": "眼C/D > 0.4；慢性咽炎；慢性鼻炎。",
+      "flags": [
+        "眼C/D异常",
+        "慢性咽炎",
+        "慢性鼻炎"
+      ]
+    }
+  ],
+  "impressions": [
+    "1、甲胎蛋白偏高",
+    "2、全血粘度高切增高，全血粘度中切增高，全血粘度低切增高",
+    "3、总胆固醇增高，低密度脂蛋白增高",
+    "4、同型半胱氨酸增高",
+    "5、右侧甲状腺结节",
+    "6、左肾囊肿",
+    "7、左房增大伴轻度二尖瓣关闭不全；主动脉根部内径稍宽伴轻度主动脉瓣关闭不全；室间隔基底部增厚",
+    "8、双侧颈动脉粥样斑块形成",
+    "9、两肺微小结节，两肺少许慢性炎症",
+    "10、双侧髂动脉局部管壁钙化斑块；腹主动脉局部钙化",
+    "11、肝脏形态欠规则",
+    "12、肝脏小低密度影",
+    "13、左肾小低密度影",
+    "14、肠系膜血管向右旋转不良",
+    "15、正常血压高值 (126/86mmHg)",
+    "16、动脉硬化，I级",
+    "17、眼C/D > 0.4",
+    "18、慢性咽炎；慢性鼻炎",
+    "19、前列腺钙化灶"
+  ],
+  "observations": [
+    {
+      "code": "AFP",
+      "display": "甲胎蛋白",
+      "value_num": 8.23,
+      "value_text": null,
+      "unit": "ng/mL",
+      "ref_low": null,
+      "ref_high": 7.0,
+      "abnormal_flag": "H"
+    },
+    {
+      "code": "CEA",
+      "display": "癌胚抗原",
+      "value_num": 2.31,
+      "value_text": null,
+      "unit": "ng/mL",
+      "ref_low": null,
+      "ref_high": 5.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "CYFRA21-1",
+      "display": "细胞角蛋白19",
+      "value_num": 1.03,
+      "value_text": null,
+      "unit": "ng/mL",
+      "ref_low": null,
+      "ref_high": 2.08,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "CA125",
+      "display": "糖类抗原125",
+      "value_num": 5.8,
+      "value_text": null,
+      "unit": "U/mL",
+      "ref_low": null,
+      "ref_high": 24.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "CA199",
+      "display": "糖类抗原199",
+      "value_num": 8.9,
+      "value_text": null,
+      "unit": "U/mL",
+      "ref_low": null,
+      "ref_high": 25.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "FPSA",
+      "display": "游离前列腺特异性抗原",
+      "value_num": 0.209,
+      "value_text": null,
+      "unit": "ng/mL",
+      "ref_low": null,
+      "ref_high": 2.176,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "TPSA",
+      "display": "总前列腺特异性抗原",
+      "value_num": 0.542,
+      "value_text": null,
+      "unit": "ng/mL",
+      "ref_low": null,
+      "ref_high": 4.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "F/T",
+      "display": "游离/总前列腺特异性抗原",
+      "value_num": 0.39,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 0.25,
+      "ref_high": null,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "WBC",
+      "display": "白细胞计数",
+      "value_num": 7.45,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 3.5,
+      "ref_high": 9.5,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "NEUT%",
+      "display": "中性粒细胞%",
+      "value_num": 57.1,
+      "value_text": null,
+      "unit": "%",
+      "ref_low": 40.0,
+      "ref_high": 75.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "LYMPH%",
+      "display": "淋巴细胞%",
+      "value_num": 32.7,
+      "value_text": null,
+      "unit": "%",
+      "ref_low": 20.0,
+      "ref_high": 50.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "MONO%",
+      "display": "单核细胞%",
+      "value_num": 6.6,
+      "value_text": null,
+      "unit": "%",
+      "ref_low": 3.0,
+      "ref_high": 10.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "EOS%",
+      "display": "嗜酸性粒细胞%",
+      "value_num": 3.4,
+      "value_text": null,
+      "unit": "%",
+      "ref_low": 0.4,
+      "ref_high": 8.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "BASO%",
+      "display": "嗜碱性粒细胞%",
+      "value_num": 0.2,
+      "value_text": null,
+      "unit": "%",
+      "ref_low": 0.0,
+      "ref_high": 1.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "NEUT#",
+      "display": "中性粒细胞计数",
+      "value_num": 4.26,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 1.8,
+      "ref_high": 6.3,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "LYMPH#",
+      "display": "淋巴细胞计数",
+      "value_num": 2.44,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 1.1,
+      "ref_high": 3.2,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "MONO#",
+      "display": "单核细胞计数",
+      "value_num": 0.49,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 0.1,
+      "ref_high": 0.6,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "EOS#",
+      "display": "嗜酸性粒细胞计数",
+      "value_num": 0.25,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 0.02,
+      "ref_high": 0.52,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "BASO#",
+      "display": "嗜碱性粒细胞计数",
+      "value_num": 0.01,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 0.0,
+      "ref_high": 0.06,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "RBC",
+      "display": "红细胞计数",
+      "value_num": 5.08,
+      "value_text": null,
+      "unit": "10^12/L",
+      "ref_low": 4.3,
+      "ref_high": 5.8,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "HGB",
+      "display": "血红蛋白",
+      "value_num": 152.0,
+      "value_text": null,
+      "unit": "g/L",
+      "ref_low": 130.0,
+      "ref_high": 175.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "HCT",
+      "display": "红细胞比容",
+      "value_num": 0.465,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 0.4,
+      "ref_high": 0.5,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "MCV",
+      "display": "平均红细胞体积",
+      "value_num": 91.5,
+      "value_text": null,
+      "unit": "fl",
+      "ref_low": 82.0,
+      "ref_high": 100.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "MCH",
+      "display": "平均血红蛋白量",
+      "value_num": 29.9,
+      "value_text": null,
+      "unit": "pg",
+      "ref_low": 27.0,
+      "ref_high": 34.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "MCHC",
+      "display": "平均血红蛋白浓度",
+      "value_num": 327.0,
+      "value_text": null,
+      "unit": "g/L",
+      "ref_low": 316.0,
+      "ref_high": 354.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "RDW",
+      "display": "红细胞分布宽度",
+      "value_num": 13.7,
+      "value_text": null,
+      "unit": "%",
+      "ref_low": 11.6,
+      "ref_high": 14.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "PLT",
+      "display": "血小板计数",
+      "value_num": 180.0,
+      "value_text": null,
+      "unit": "10^9/L",
+      "ref_low": 125.0,
+      "ref_high": 350.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "MPV",
+      "display": "血小板平均体积",
+      "value_num": 10.8,
+      "value_text": null,
+      "unit": "fl",
+      "ref_low": 6.5,
+      "ref_high": 12.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "CRP",
+      "display": "C-反应蛋白",
+      "value_num": 1.2,
+      "value_text": null,
+      "unit": "mg/l",
+      "ref_low": null,
+      "ref_high": 10.0,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "WBV-L",
+      "display": "全血粘度: 低切(3/s)",
+      "value_num": 13.19,
+      "value_text": null,
+      "unit": "mPa.s",
+      "ref_low": 8.69,
+      "ref_high": 13.15,
+      "abnormal_flag": "H"
+    },
+    {
+      "code": "WBV-M",
+      "display": "全血粘度: 中切(50/s)",
+      "value_num": 7.92,
+      "value_text": null,
+      "unit": "mPa.s",
+      "ref_low": 5.53,
+      "ref_high": 7.86,
+      "abnormal_flag": "H"
+    },
+    {
+      "code": "WBV-H",
+      "display": "全血粘度: 高切(200/s)",
+      "value_num": 6.17,
+      "value_text": null,
+      "unit": "mPa.s",
+      "ref_low": 4.43,
+      "ref_high": 6.11,
+      "abnormal_flag": "H"
+    },
+    {
+      "code": "R-WBV-L",
+      "display": "全血还原粘度低切",
+      "value_num": 18.6,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 11.02,
+      "ref_high": 22.4,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "R-WBV-M",
+      "display": "全血还原粘度中切",
+      "value_num": 10.3,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 6.0,
+      "ref_high": 12.41,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "R-WBV-H",
+      "display": "全血还原粘度高切",
+      "value_num": 7.55,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 4.25,
+      "ref_high": 9.18,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "PV",
+      "display": "血浆粘度",
+      "value_num": 1.38,
+      "value_text": null,
+      "unit": "mPa.s",
+      "ref_low": 1.15,
+      "ref_high": 1.75,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "RAI",
+      "display": "红细胞聚集指数",
+      "value_num": 9.56,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 4.97,
+      "ref_high": 11.43,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "RRI",
+      "display": "红细胞刚性指数",
+      "value_num": 9.72,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 7.03,
+      "ref_high": 11.3,
+      "abnormal_flag": "N"
+    },
+    {
+      "code": "RDI",
+      "display": "红细胞变形指数",
+      "value_num": 0.98,
+      "value_text": null,
+      "unit": "None",
+      "ref_low": 0.67,
+      "ref_high": 1.4,
+      "abnormal_flag": "N"
+    }
+  ],
+  "notes": "以上检验结果仅供临床医师参考。",
+  "deidentified": true,
+  "engine": "vision_llm"
+}

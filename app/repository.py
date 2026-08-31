@@ -347,6 +347,15 @@ def list_findings(profile_id: str) -> List[dict]:
     return out
 
 
+def list_findings_by_report(report_id: str) -> List[dict]:
+    out = _rows(_c().execute(
+        "SELECT * FROM findings WHERE report_id=? ORDER BY created_at",
+        (report_id,)))
+    for f in out:
+        f["flags"] = _loads(f.pop("flags_json"), [])
+    return out
+
+
 # ================================================================ health events
 def add_event(profile_id: str, event_date: str, etype: str, content: str,
               source: str) -> dict:
