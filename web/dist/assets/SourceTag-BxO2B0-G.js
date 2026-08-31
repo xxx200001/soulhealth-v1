@@ -1,1 +1,0 @@
-import{o as e,c as s,t as a}from"./index-B6bAUTX8.js";const c={class:"src"},p={__name:"SourceTag",props:{text:{type:String,default:"历史记录"}},setup(t){return(o,r)=>(e(),s("span",c,a(t.text),1))}};export{p as _};

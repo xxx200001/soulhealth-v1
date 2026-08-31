@@ -165,8 +165,55 @@ def _build_source_blocks(file_path: Path) -> Tuple[List[dict], dict]:
             "media_type": media_type, "model": config.VISION_MODEL}
 
     if is_pdf:
+        # PDF → 逐页渲染为压缩 JPEG 图片，避免 type:"document" 的百万级 token 消耗
+        # 实测：原始 PDF document 方式单份 300万+ token / ¥83；转图片后 ~5万 token / ¥1
+        MAX_PDF_PAGES = 5  # 体检报告一般 1~3 页，最多取前 5 页
+        try:
+            import fitz  # PyMuPDF
+            import io
+            from PIL import Image, ImageOps, ImageEnhance
+
+            doc = fitz.open(stream=data, filetype="pdf")
+            pages_to_process = min(len(doc), MAX_PDF_PAGES)
+            blocks = []
+
+            for page_idx in range(pages_to_process):
+                page = doc[page_idx]
+                # 渲染为 200 DPI 的 pixmap（兼顾清晰度与体积）
+                pix = page.get_pixmap(dpi=200)
+                img_data = pix.tobytes("png")
+
+                # 和普通图片走相同的优化路径：限制长边 + 锐度增强 + JPEG 压缩
+                im = Image.open(io.BytesIO(img_data)).convert("RGB")
+                w, h = im.size
+                max_dim = 1600
+                if max(w, h) > max_dim:
+                    scale = max_dim / float(max(w, h))
+                    im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+                im_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(im, cutoff=0.3)).enhance(1.15)
+
+                buf = io.BytesIO()
+                im_enh.save(buf, format="JPEG", quality=80, optimize=True)
+                page_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                blocks.append({"type": "image",
+                               "source": {"type": "base64", "media_type": "image/jpeg",
+                                           "data": page_b64}})
+
+            doc.close()
+            diag["blocks_count"] = len(blocks)
+            diag["pdf_pages_total"] = pages_to_process
+            return (blocks, diag)
+        except ImportError:
+            # PyMuPDF 未安装时回退为原始 document 方式（兜底）
+            pass
+        except Exception as exc:
+            # PDF 渲染失败时也回退为原始 document 方式
+            print(f"[Vision] PDF 转图片失败({exc})，回退为原始 document 方式")
+
+        # 回退：原始 PDF document 方式（token 消耗极高，仅作兜底）
         b64 = base64.b64encode(data).decode("ascii")
         diag["b64_len"] = len(b64)
+        diag["fallback"] = "raw_document"
         return ([{"type": "document",
                   "source": {"type": "base64", "media_type": media_type, "data": b64}}],
                 diag)
@@ -260,7 +307,7 @@ def _extract_via_anthropic(source_blocks: List[dict], diag: dict,
     return None, last_error
 
 
-def _extract_via_openai(file_path: Path, diag: dict,
+def _extract_via_openai(source_blocks: list, diag: dict,
                         doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
     if not config.OPENAI_API_KEY:
         return None, None
@@ -272,23 +319,29 @@ def _extract_via_openai(file_path: Path, diag: dict,
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0",
     }
-    b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
-    mime = diag.get("media_type") or "image/jpeg"
+    # 将 Anthropic 格式的 source_blocks 转换为 OpenAI 格式的 image_url 内容块
+    content_parts = []
+    for blk in source_blocks:
+        if blk.get("type") == "image":
+            src = blk["source"]
+            mime = src.get("media_type", "image/jpeg")
+            b64 = src["data"]
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        elif blk.get("type") == "document":
+            # document 类型（PDF 原始回退）：OpenAI 协议不支持，跳过并报错
+            return None, ExtractionError("OpenAI 兼容协议不支持直接发送 PDF document，请确保 PyMuPDF 已安装")
+    if not content_parts:
+        return None, ExtractionError("无有效图像内容块")
+    content_parts.append({"type": "text", "text": extraction_user_prompt(doc_type_hint)})
     payload = {
         "model": config.OPENAI_MODEL,
-        "max_tokens": 3000,
+        "max_tokens": 4500,
         "messages": [
             {"role": "system", "content": EXTRACTION_SYSTEM},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{b64}"},
-                    },
-                    {"type": "text", "text": extraction_user_prompt(doc_type_hint)},
-                ],
-            },
+            {"role": "user", "content": content_parts},
         ],
     }
     try:
@@ -296,7 +349,7 @@ def _extract_via_openai(file_path: Path, diag: dict,
             url, data=json.dumps(payload).encode("utf-8"),
             headers=headers, method="POST",
         )
-        with urllib.request.urlopen(req, timeout=35) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
             txt = res_data["choices"][0]["message"]["content"]
             data = json.loads(_strip_to_json(txt))
@@ -333,7 +386,7 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
 
     # 2. 备选 OpenAI 兼容视觉通道（备用通道：FluAPI）
     if config.OPENAI_API_KEY:
-        data, openai_err = _extract_via_openai(file_path, diag, doc_type_hint)
+        data, openai_err = _extract_via_openai(source_blocks, diag, doc_type_hint)
         if data:
             print("[Vision OCR] 备用通道 (OpenAI/FluAPI) 视觉抽取成功！")
             return from_dict(data)

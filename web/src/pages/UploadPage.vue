@@ -7,15 +7,31 @@
         支持图片 / 拍照 / PDF，单次建议选择 1~3 份；每份独立高精识别、秒级入档
       </p>
 
-      <label class="drop" :class="{ busy }">
-        <input type="file" multiple accept="image/*,.pdf" hidden
-               :disabled="busy" @change="onPick" />
-        <span v-if="!busy" class="drop-ico" v-html="icoUp"></span>
-        <span v-else class="spin"></span>
-        <b>{{ busy ? `正在极速并发识别中（共 ${total} 份）…` : '点击选择文件（单次建议 1~3 份）' }}</b>
+      <!-- 隐藏文件输入：图片专用（兼容所有安卓机型） -->
+      <input ref="inputImage" type="file" multiple accept="image/*" hidden
+             :disabled="busy" @change="onPick" />
+      <!-- 隐藏文件输入：PDF 专用（解决 OPPO/Vivo/小米/华为 等国产安卓 image/* 劫持问题） -->
+      <input ref="inputPdf" type="file" multiple accept="application/pdf,.pdf" hidden
+             :disabled="busy" @change="onPick" />
+
+      <div class="drop" :class="{ busy }" v-if="!busy">
+        <span class="drop-ico" v-html="icoUp"></span>
+        <b>点击选择文件（单次建议 1~3 份）</b>
+        <div class="drop-btns">
+          <button type="button" class="drop-btn drop-btn-img" @click.stop="$refs.inputImage.click()">
+            <span class="drop-btn-ico">🖼</span> 图片 / 拍照
+          </button>
+          <button type="button" class="drop-btn drop-btn-pdf" @click.stop="$refs.inputPdf.click()">
+            <span class="drop-btn-ico">📄</span> PDF 文件
+          </button>
+        </div>
         <span class="tiny">系统将自动并发识别并入档，一份失败不影响其他；
           原件完整保存，识别结果可随时回溯</span>
-      </label>
+      </div>
+      <div class="drop busy" v-else>
+        <span class="spin"></span>
+        <b>{{ `正在极速并发识别中（共 ${total} 份）…` }}</b>
+      </div>
       <div v-if="busy" class="bar" style="margin-top: var(--sp-3)">
         <span :style="{ width: (doing / Math.max(total,1)) * 100 + '%' }"></span>
       </div>
@@ -508,6 +524,16 @@ onBeforeUnmount(() => {
 .drop.busy { cursor: wait; }
 .drop-ico { color: var(--brand-600); }
 .drop b { font-size: 14px; }
+
+/* 双按钮行：图片 / PDF 分离，解决国产安卓 file picker 兼容性 */
+.drop-btns { display: flex; gap: 10px; margin: 8px 0 4px; width: 100%; justify-content: center; }
+.drop-btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px;
+  border: 1.5px solid var(--brand-400); border-radius: var(--r-sm); background: #fff;
+  color: var(--brand-700); font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: all .16s; flex: 1; justify-content: center; max-width: 180px; }
+.drop-btn:hover { background: var(--brand-100); border-color: var(--brand-600); }
+.drop-btn:active { transform: scale(0.97); }
+.drop-btn-ico { font-size: 18px; }
 
 .ledger .lg-grid { display: grid; grid-template-columns: repeat(4, 1fr);
   gap: var(--sp-2); margin: var(--sp-3) 0; text-align: center; }

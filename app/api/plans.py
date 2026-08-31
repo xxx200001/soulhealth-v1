@@ -43,6 +43,34 @@ def diet_history(profile_id: str, user: dict = Depends(current_user)):
     return {"items": repo.list_diet_plans(profile_id)}
 
 
+@router.get("/diet/export-pdf")
+def diet_export_pdf(profile_id: str, dpid: str = None, user: dict = Depends(current_user)):
+    from urllib.parse import quote
+    from fastapi import Response
+    from ..export import pdf_export
+
+    scoped_profile(profile_id, user)
+    profile = repo.get_profile(profile_id) or {}
+    if dpid:
+        plan = repo.get_diet_plan(dpid)
+    else:
+        plan = repo.active_diet_plan(profile_id)
+    if not plan:
+        raise HTTPException(404, "暂无有效的食补方案")
+
+    pdf_bytes = pdf_export.generate_diet_pdf(profile, plan)
+    filename = f"食补方案_{profile.get('name', '用户')}.pdf"
+    encoded_filename = quote(filename)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
 @router.get("/diet/{dpid}")
 def diet_get(dpid: str, user: dict = Depends(current_user)):
     p = repo.get_diet_plan(dpid)
@@ -87,6 +115,34 @@ def tea_history(profile_id: str, user: dict = Depends(current_user)):
     return {"items": repo.list_tea_plans(profile_id)}
 
 
+@router.get("/tea/export-pdf")
+def tea_export_pdf(profile_id: str, tid: str = None, user: dict = Depends(current_user)):
+    from urllib.parse import quote
+    from fastapi import Response
+    from ..export import pdf_export
+
+    scoped_profile(profile_id, user)
+    profile = repo.get_profile(profile_id) or {}
+    if tid:
+        plan = repo.get_tea_plan(tid)
+    else:
+        plan = repo.active_tea_plan(profile_id)
+    if not plan:
+        raise HTTPException(404, "暂无有效的茶饮方案")
+
+    pdf_bytes = pdf_export.generate_tea_pdf(profile, plan)
+    filename = f"茶饮方案_{profile.get('name', '用户')}.pdf"
+    encoded_filename = quote(filename)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
 @router.get("/tea/{tid}")
 def tea_get(tid: str, user: dict = Depends(current_user)):
     p = repo.get_tea_plan(tid)
@@ -96,3 +152,4 @@ def tea_get(tid: str, user: dict = Depends(current_user)):
     if p.get("safety_check_id"):
         p["safety_check"] = repo.get_safety_check(p["safety_check_id"])
     return p
+

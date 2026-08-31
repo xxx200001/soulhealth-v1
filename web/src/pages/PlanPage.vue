@@ -28,9 +28,15 @@
       <section class="card fade-in">
         <div class="row-between">
           <div class="card-title"><span class="dot"></span>本方案针对的健康目标</div>
-          <button class="btn btn-quiet btn-sm" :disabled="gen" @click="genDiet">
-            <span v-if="gen" class="spin"></span>重新生成
-          </button>
+          <div class="row-gap-sm">
+            <button class="btn btn-export btn-sm" :disabled="exporting" @click="exportDietPDF" title="导出PDF">
+              <span v-if="exporting" class="spin"></span>
+              <template v-else>📄</template> 导出
+            </button>
+            <button class="btn btn-quiet btn-sm" :disabled="gen" @click="genDiet">
+              <span v-if="gen" class="spin"></span>重新生成
+            </button>
+          </div>
         </div>
         <div class="stack-sm" style="margin-top: var(--sp-2)">
           <div v-for="g in diet.goals" :key="g.tag" class="goal">
@@ -124,9 +130,15 @@
               <h3 class="teaname">{{ p.name }}</h3>
               <p class="tiny">{{ p.goal_label }} · 第 {{ tea.version }} 版</p>
             </div>
-            <button class="btn btn-quiet btn-sm" :disabled="gen" @click="genTea">
-              <span v-if="gen" class="spin"></span>重新生成
-            </button>
+            <div class="row-gap-sm">
+              <button class="btn btn-export btn-sm" :disabled="exporting" @click="exportTeaPDF" title="导出PDF">
+                <span v-if="exporting" class="spin"></span>
+                <template v-else>📄</template> 导出
+              </button>
+              <button class="btn btn-quiet btn-sm" :disabled="gen" @click="genTea">
+                <span v-if="gen" class="spin"></span>重新生成
+              </button>
+            </div>
           </div>
 
           <div class="table-wrap" style="margin: var(--sp-3) 0">
@@ -252,6 +264,7 @@ const session = useSessionStore()
 const tab = ref('diet')
 const loaded = ref(false)
 const gen = ref(false)
+const exporting = ref(false)
 const diet = ref(null)
 const tea = ref(null)
 const dietHist = ref([])
@@ -311,12 +324,36 @@ async function openTea(id) {
   catch (e) { alert(e.message) }
 }
 
+// ---- PDF 导出（服务端生成专业矢量 PDF，告别浏览器空白/字体兼容问题） ----
+async function exportDietPDF() {
+  if (!diet.value) return
+  exporting.value = true
+  try {
+    await api.downloadDietPdf(session.profileId, diet.value.id)
+  } catch (e) {
+    alert(e.message || '导出食补方案失败，请重试')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function exportTeaPDF() {
+  if (!tea.value) return
+  exporting.value = true
+  try {
+    await api.downloadTeaPdf(session.profileId, tea.value.id)
+  } catch (e) {
+    alert(e.message || '导出茶饮方案失败，请重试')
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(async () => {
   await refresh()
-  // 从分析页「一键生成」进入：gen=diet / tea / all（AC 反馈修复）
   const g = route.query.gen
   if (!g) return
-  router.replace({ path: '/plan' })   // 清掉参数，避免刷新时重复生成
+  router.replace({ path: '/plan' })
   if (g === 'tea') {
     await genTea()
     return
@@ -418,4 +455,11 @@ onMounted(async () => {
   width: 100%; border: none; background: var(--surface-sunk);
   border-radius: var(--r-sm); padding: 9px 12px; font: inherit;
   cursor: pointer; text-align: left; }
+
+.row-gap-sm { display: flex; gap: 6px; align-items: center; }
+.btn-export { background: var(--brand-050); color: var(--brand-700); border: 1px solid var(--brand-300);
+  font-weight: 600; border-radius: var(--r-sm); padding: 4px 12px; cursor: pointer;
+  font-size: 12.5px; transition: all .16s; display: inline-flex; align-items: center; gap: 4px; }
+.btn-export:hover { background: var(--brand-100); border-color: var(--brand-500); }
+.btn-export:active { transform: scale(0.96); }
 </style>

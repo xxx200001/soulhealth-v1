@@ -136,10 +136,39 @@ export const api = {
   dietHistory: (pid) => request(`/api/plans/diet/history?${q({ profile_id: pid })}`),
   dietGet: (dpid) => request(`/api/plans/diet/${dpid}`),
   recipe: (rcid) => request(`/api/plans/recipes/${rcid}`),
+  downloadDietPdf: async (pid, dpid) => {
+    const t = token()
+    const url = `${BASE}/api/plans/diet/export-pdf?${q({ profile_id: pid, ...(dpid ? { dpid } : {}) })}`
+    const res = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} })
+    if (!res.ok) throw new Error(await detailOf(res) || '导出食补 PDF 失败')
+    const blob = await res.blob()
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `食补方案.pdf`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000)
+  },
   teaGenerate: (pid) => post('/api/plans/tea/generate', { profile_id: pid }),
   teaActive: (pid) => request(`/api/plans/tea/active?${q({ profile_id: pid })}`),
   teaHistory: (pid) => request(`/api/plans/tea/history?${q({ profile_id: pid })}`),
   teaGet: (tid) => request(`/api/plans/tea/${tid}`),
+  downloadTeaPdf: async (pid, tid) => {
+    const t = token()
+    const url = `${BASE}/api/plans/tea/export-pdf?${q({ profile_id: pid, ...(tid ? { tid } : {}) })}`
+    const res = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} })
+    if (!res.ok) throw new Error(await detailOf(res) || '导出茶饮 PDF 失败')
+    const blob = await res.blob()
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `茶饮方案.pdf`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000)
+  },
+
 
   // ---- 问询 ----
   ask: (pid, text, conversationId) =>

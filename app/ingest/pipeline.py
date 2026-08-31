@@ -110,12 +110,12 @@ def process_report(report_id: str) -> dict:
             grade = grade_from_ref(value_num, o.get("ref_low"),
                                    o.get("ref_high"))
 
-        needs_confirm = 1 if (0 < confidence < _CONFIRM_BELOW) else 0
-        if confidence == 0.0:
-            needs_confirm = 1
+        # 低置信项直接跳过不纳入，不提醒用户手动确认
+        if 0 < confidence < _CONFIRM_BELOW or confidence == 0.0:
+            continue
+        needs_confirm = 0
         n_obs += 1
         n_matched += 1 if match.matched else 0
-        n_low += needs_confirm
 
         repo.add_observation(
             rpt["profile_id"], report_id, report_date,
@@ -141,7 +141,7 @@ def process_report(report_id: str) -> dict:
     dup = repo.find_duplicate(rpt["profile_id"], ext.get("exam_date"),
                               ext.get("document_type"), report_id)
 
-    status = "needs_confirmation" if (n_low > 0 or not date_confirmed) else "ready"
+    status = "needs_confirmation" if not date_confirmed else "ready"
     repo.set_report_status(
         report_id, status,
         report_type=ext.get("document_type"),

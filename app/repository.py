@@ -15,21 +15,21 @@ from typing import Any, List, Optional
 
 from . import db
 
-_conn = None
+_local = threading.local()
 _lock = threading.Lock()
 
 
 def init() -> None:
-    global _conn
-    if _conn is None:
-        _conn = db.connect()
-        db.init_db(_conn)
+    """确保当前线程有独立的 SQLite 连接（线程安全）。"""
+    if not getattr(_local, "conn", None):
+        _local.conn = db.connect()
+        db.init_db(_local.conn)
 
 
 def _c():
-    if _conn is None:
+    if not getattr(_local, "conn", None):
         init()
-    return _conn
+    return _local.conn
 
 
 def now() -> str:
