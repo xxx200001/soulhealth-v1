@@ -271,7 +271,7 @@ def _extract_via_anthropic(source_blocks: List[dict], diag: dict,
     # 主备视觉模型轮询表
     primary_model = config.VISION_MODEL
     candidate_models = [primary_model]
-    for m in ("claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-8", "claude-sonnet-5"):
+    for m in ("claude-sonnet-5", "claude-sonnet-4.6", "claude-opus-4.8"):
         if m not in candidate_models:
             candidate_models.append(m)
 
