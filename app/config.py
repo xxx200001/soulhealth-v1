@@ -53,13 +53,13 @@ PORT: int = int(os.getenv("SOULHEALTH_PORT", "8001"))
 # ---------------------------------------------------------------- 大模型
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_BASE_URL: str = os.getenv("ANTHROPIC_BASE_URL",
-                                    "https://api.anthropic.com").strip()
+                                    "https://api.openasi.bitmiracle.cn").strip()
 VISION_MODEL: str = (os.getenv("VISION_MODEL")
                      or os.getenv("SOULHEALTH_VISION_MODEL")
-                     or "claude-sonnet-4-6").strip()
+                     or "claude-sonnet-5").strip()
 LLM_MODEL: str = (os.getenv("SOULHEALTH_LLM_MODEL")
                   or os.getenv("LLM_MODEL")
-                  or "deepseek-chat").strip()
+                  or "claude-sonnet-5").strip()
 
 # 备用通道 (OpenAI 兼容协议)
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "").strip()

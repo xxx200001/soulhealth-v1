@@ -59,16 +59,16 @@ app/
 cd soulhealth-v1
 cp .env.example .env            # 默认 MOCK 离线演示模式
 pip install -r requirements.txt
-python run.py                   # http://localhost:8001（自动播种演示账号）
+python run.py                   # http://localhost:8002（自动播种演示账号）
 
 # 2) 前端开发模式（Node 18+）
 cd web
 npm install
-npm run dev                     # http://localhost:5173（/api 已代理到 8001）
+npm run dev                     # http://localhost:5173（/api 已代理到 8002）
 
 # 或：单端口部署
 npm run build                   # 产物在 web/dist，后端自动托管
-# 直接访问 http://localhost:8001
+# 直接访问 http://localhost:8002
 ```
 
 演示账号：**demo / demo123456**（内置李国栋 2024–2026 三年三份体检数据，
@@ -110,9 +110,9 @@ python tests/test_core_offline.py   # 48 项断言，无需网络/密钥/FastAPI
 | --- | --- | --- |
 | SOULHEALTH_MOCK | 1 | 离线演示模式（内置样例抽取结果） |
 | ANTHROPIC_API_KEY | 空 | 配置后启用真实视觉抽取与问询润色 |
-| SOULHEALTH_LLM_MODEL | claude-sonnet-4-6 | 模型名 |
+| SOULHEALTH_LLM_MODEL | claude-sonnet-5 | 模型名 |
 | SOULHEALTH_SEED_DEMO | 1 | 启动时播种演示账号 |
-| SOULHEALTH_PORT | 8001 | 后端端口（前端代理同步读取） |
+| SOULHEALTH_PORT | 8002 | 后端端口（前端代理同步读取） |
 | SOULHEALTH_SECRET | 请修改 | Token 签名密钥 |
 
 ## 七、服务边界
