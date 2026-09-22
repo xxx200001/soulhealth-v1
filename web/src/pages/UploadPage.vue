@@ -4,7 +4,7 @@
     <section class="card fade-in">
       <div class="card-title"><span class="dot"></span>上传健康资料</div>
       <p class="muted" style="margin: 6px 0 var(--sp-3)">
-        支持图片 / 拍照 / PDF，每份独立高精识别并自动入档
+        支持图片 / 拍照 / PDF，识别完成后自动整理并加入健康档案
       </p>
 
       <!-- 隐藏文件输入：图片专用（兼容所有安卓机型） -->
@@ -16,21 +16,26 @@
 
       <div class="drop" :class="{ busy }" v-if="!busy">
         <span class="drop-ico" v-html="icoUp"></span>
-        <b>点击选择文件（图片可多选，PDF 请逐份上传）</b>
+        <b>选择需要上传的健康资料</b>
         <div class="drop-btns">
-          <button type="button" class="drop-btn drop-btn-img" @click.stop="$refs.inputImage.click()">
-            <span class="drop-btn-ico">🖼</span> 图片 / 拍照
-          </button>
-          <button type="button" class="drop-btn drop-btn-pdf" @click.stop="$refs.inputPdf.click()">
-            <span class="drop-btn-ico">📄</span> PDF 文件
-          </button>
+          <div class="drop-btn-group">
+            <button type="button" class="drop-btn drop-btn-img" @click.stop="$refs.inputImage.click()">
+              <span class="drop-btn-ico">🖼</span> 图片 / 拍照
+            </button>
+            <span class="drop-btn-hint">1~3张</span>
+          </div>
+          <div class="drop-btn-group">
+            <button type="button" class="drop-btn drop-btn-pdf" @click.stop="$refs.inputPdf.click()">
+              <span class="drop-btn-ico">📄</span> PDF 文件
+            </button>
+            <span class="drop-btn-hint">每次选择1份</span>
+          </div>
         </div>
-        <span class="tiny">系统将自动并发识别并入档，一份失败不影响其他；
-          原件完整保存，识别结果可随时回溯</span>
+        <span class="tiny">资料将自动识别并整理入档。为保证识别稳定性，内容较多、文字密集或复杂的报告建议单独上传。</span>
       </div>
       <div class="drop busy" v-else>
         <span class="spin"></span>
-        <b>{{ `正在极速并发识别中（共 ${total} 份）…` }}</b>
+        <b>正在识别并整理健康数据……</b>
       </div>
       <div v-if="busy" class="bar" style="margin-top: var(--sp-3)">
         <span :style="{ width: (doing / Math.max(total,1)) * 100 + '%' }"></span>
@@ -400,7 +405,7 @@ function mergeSummary(m, res) {
 function buildNotice(m) {
   const okCount = m.ready + m.needs_confirmation
   if (!m.failed && !m.needs_confirmation) {
-    return { type: 'ok', text: `本次 ${m.total} 份已全部上传成功并识别入档 ✓` }
+    return { type: 'ok', text: `已完成识别并加入健康档案 ✓（共 ${m.total} 份）` }
   }
   if (!m.failed) {
     return { type: 'ok',
@@ -543,6 +548,8 @@ onBeforeUnmount(() => {
 .drop-btn:hover { background: var(--brand-100); border-color: var(--brand-600); }
 .drop-btn:active { transform: scale(0.97); }
 .drop-btn-ico { font-size: 18px; }
+.drop-btn-group { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; max-width: 180px; }
+.drop-btn-hint { font-size: 11px; color: var(--ink-400); }
 
 .ledger .lg-grid { display: grid; grid-template-columns: repeat(4, 1fr);
   gap: var(--sp-2); margin: var(--sp-3) 0; text-align: center; }
