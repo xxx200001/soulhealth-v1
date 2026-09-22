@@ -45,7 +45,14 @@ def process_report(report_id: str) -> dict:
         repo.set_report_status(report_id, "failed", error=str(exc))
         return repo.get_report(report_id)
     except Exception as exc:  # 不可预期错误也要落到状态机，禁止悄悄丢单
-        repo.set_report_status(report_id, "failed", error=f"抽取失败：{exc}")
+        err_str = str(exc).lower()
+        if 'timed out' in err_str or 'timeout' in err_str:
+            friendly = f"识别 {Path(rpt['stored_path']).name} 超时。建议：将 PDF 转为图片后重新上传，或减少页数后重试。"
+        elif 'memory' in err_str:
+            friendly = "服务器内存不足，无法处理此文件。建议：将文件转为图片后重新上传。"
+        else:
+            friendly = f"识别文件时遇到问题。建议：请将文件转为清晰图片（JPG/PNG）后重新上传，或稍后重试。"
+        repo.set_report_status(report_id, "failed", error=friendly)
         return repo.get_report(report_id)
 
     extraction = deid.scrub_extraction(extraction)

@@ -61,14 +61,29 @@ LLM_MODEL: str = (os.getenv("SOULHEALTH_LLM_MODEL")
                   or os.getenv("LLM_MODEL")
                   or "claude-sonnet-5").strip()
 
-# 备用通道 (OpenAI 兼容协议)
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "").strip()
+# 备用通道 (OpenAI 兼容协议) — 支持多 Key 轮换
+# 格式：逗号分隔多个 Key，如 OPENAI_API_KEY=key1,key2
+_raw_openai_keys = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEYS: list = [k.strip() for k in _raw_openai_keys.split(",") if k.strip()]
+OPENAI_API_KEY: str = OPENAI_API_KEYS[0] if OPENAI_API_KEYS else ""
 OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL",
                                  "https://api.openai.com/v1").strip()
 OPENAI_MODEL: str = (os.getenv("OPENAI_VISION_MODEL")
                      or os.getenv("OPENAI_LLM_MODEL")
                      or os.getenv("LLM_MODEL")
                      or "claude-sonnet-5").strip()
+
+# Key 轮换计数器
+_openai_key_idx = 0
+
+def next_openai_key() -> str:
+    """轮换获取下一个可用的 OpenAI API Key。"""
+    global _openai_key_idx
+    if not OPENAI_API_KEYS:
+        return ""
+    key = OPENAI_API_KEYS[_openai_key_idx % len(OPENAI_API_KEYS)]
+    _openai_key_idx += 1
+    return key
 
 MOCK_MODE: bool = os.getenv("SOULHEALTH_MOCK", "").strip() == "1"
 LLM_MODE: str = "mock" if MOCK_MODE else ("real" if (ANTHROPIC_API_KEY or OPENAI_API_KEY) else "unconfigured")

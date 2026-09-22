@@ -58,38 +58,46 @@ def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[
                 time.sleep(0.5)
                 continue  # 所有异常都继续尝试下一个模型
 
-    # 2. 备选尝试 OpenAI 兼容协议 (DeepSeek / FluAPI 等)
-    if config.OPENAI_API_KEY:
-        try:
-            import json
-            import urllib.request
-            base = config.OPENAI_BASE_URL.rstrip("/")
-            url = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
+    # 2. 备选尝试 OpenAI 兼容协议 — 多 Key 轮换
+    if config.OPENAI_API_KEYS:
+        import json
+        import urllib.request
+        base = config.OPENAI_BASE_URL.rstrip("/")
+        url = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
+        payload = {
+            "model": config.OPENAI_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                *formatted,
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        for _attempt in range(len(config.OPENAI_API_KEYS)):
+            api_key = config.next_openai_key()
             headers = {
-                "Authorization": f"Bearer {config.OPENAI_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0"
             }
-            payload = {
-                "model": config.OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    *formatted,
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0.3,
-            }
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode("utf-8"),
-                headers=headers, method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                content = data["choices"][0]["message"]["content"].strip()
-                if content:
-                    return content
-        except Exception as exc:
-            print(f"[LLM] 备用通道 (OpenAI) 调用失败: {exc}")
+            try:
+                req = urllib.request.Request(
+                    url, data=json.dumps(payload).encode("utf-8"),
+                    headers=headers, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    content = data["choices"][0]["message"]["content"].strip()
+                    if content:
+                        return content
+            except Exception as exc:
+                err_str = str(exc)
+                if any(k in err_str for k in ("401", "402", "429", "insufficient", "quota")):
+                    print(f"[LLM] Key ...{api_key[-8:]} 不可用，切换下一个...")
+                    time.sleep(0.3)
+                    continue
+                print(f"[LLM] 备用通道 (OpenAI) 调用失败: {exc}")
+                break
 
     return None
 

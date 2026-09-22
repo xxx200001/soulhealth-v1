@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Python 缓存
+__pycache__
+*.py[cod]
+*.egg-info
+venv/
+.venv/
+env/
+
+# 前端源码（只需要 web/dist 构建产物）
+web/node_modules
+web/src
+web/package-lock.json
+web/vite.config.js
+web/index.html
+web/package.json
+
+# Windows 本地工具
+*.exe
+cloudflared.exe
+cpolar.exe
+ngrok.exe
+
+# 开发/参考文件
+scratch/
+ref_filesofgood/
+参考/
+soulhealth-v1.1-fixes/
+*.zip
+*_code_dump.txt
+code_dump_*.txt
+
+# 运行时数据（服务器上会自动生成）
+data/*.db*
+data/uploads/*
+!data/uploads/.gitkeep
+tunnel_url.txt
+*.log
+
+# 环境配置（用微信云托管的环境变量功能）
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

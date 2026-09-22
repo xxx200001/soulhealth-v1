@@ -99,12 +99,43 @@ def original_file(rid: str, user: dict = Depends(current_user)):
 @router.delete("/{rid}")
 def delete_report(rid: str, user: dict = Depends(current_user)):
     r = scoped_report(rid, user)
+    profile_id = r["profile_id"]
     conn = repo._c()
+    # 级联删除报告关联的所有数据
     conn.execute("DELETE FROM observations WHERE report_id=?", (rid,))
     conn.execute("DELETE FROM findings WHERE report_id=?", (rid,))
     conn.execute("DELETE FROM reports WHERE id=?", (rid,))
+    
+    # 检查该档案是否还有其他报告
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM reports WHERE profile_id=?", (profile_id,)
+    ).fetchone()[0]
+    
+    if remaining == 0:
+        # 该档案下没有报告了，清理所有派生数据
+        conn.execute("DELETE FROM assessments WHERE profile_id=?", (profile_id,))
+        conn.execute("DELETE FROM health_issues WHERE profile_id=?", (profile_id,))
+        conn.execute("DELETE FROM health_events WHERE profile_id=?", (profile_id,))
+        conn.execute("DELETE FROM event_candidates WHERE profile_id=?", (profile_id,))
+        # diet_plans / tea_plans 及其子表
+        for plan_row in conn.execute(
+            "SELECT id FROM diet_plans WHERE profile_id=?", (profile_id,)
+        ).fetchall():
+            plan_id = plan_row[0]
+            conn.execute("DELETE FROM recipes WHERE plan_id=?", (plan_id,))
+            conn.execute("DELETE FROM safety_checks WHERE plan_id=?", (plan_id,))
+        conn.execute("DELETE FROM diet_plans WHERE profile_id=?", (profile_id,))
+        conn.execute("DELETE FROM tea_plans WHERE profile_id=?", (profile_id,))
+        # 对话记录
+        for conv_row in conn.execute(
+            "SELECT id FROM conversations WHERE profile_id=?", (profile_id,)
+        ).fetchall():
+            conn.execute("DELETE FROM conv_messages WHERE conversation_id=?", (conv_row[0],))
+        conn.execute("DELETE FROM conversations WHERE profile_id=?", (profile_id,))
+    
     conn.commit()
     p = Path(r.get("stored_path") or "")
     if p.exists():
         p.unlink()
-    return {"deleted": rid}
+    return {"deleted": rid, "profile_data_cleared": remaining == 0}
+

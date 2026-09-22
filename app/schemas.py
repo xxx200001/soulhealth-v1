@@ -168,7 +168,7 @@ def from_dict(data: dict) -> ExtractionResult:
         display_name = str(o_raw.get("display") or o_raw.get("name") or o_raw.get("item_name") or "").strip()
         code = str(o_raw.get("code") or display_name or "").strip().upper()
         if not code and not display_name:
-            errors.append(f"observations[{i}] 缺少 code 或名称")
+            # 跳过无名称的指标项，不影响整体解析
             continue
         flag = o_raw.get("abnormal_flag") or o_raw.get("flag") or o_raw.get("hint")
         if flag is not None:

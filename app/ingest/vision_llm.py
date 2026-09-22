@@ -4,6 +4,9 @@
 - MOCK 模式（显式 SOULHEALTH_MOCK=1）：按文件名路由本地样例，离线可完整演示。
 - 真实模式：前置校验（非空 / 魔数嗅探真实格式 / 体积上限）→ base64 发送 →
   严格 JSON 输出；schema 校验失败时把错误回喂模型自修正一次（共 2 次尝试）。
+- **多页 PDF 逐页调用 API**：每页独立发送，合并结果，彻底消除超时风险。
+- **智能方向检测**：EXIF 回正 + 横拍自动旋转，确保文字方向正确。
+- **影像增强预处理**：X光/CT/MRI 暗背景照片自动增强对比度与锐度。
 - **"模型没收到图片"是一类独立故障**：当模型答复表明它未看到任何图像时，
   立刻中止并抛出可执行的诊断信息（而不是含糊的"未通过校验"），并提示用
   /api/selftest/vision 自检。常见成因：所配模型不支持视觉、网关/代理剥离了
@@ -31,7 +34,8 @@ _MRI_JOINT_HINTS = ("mri", "knee", "膝", "关节", "核磁", "磁共振", "ct",
 
 # Anthropic 单图上限约 5MB（base64 后），留出 33% 膨胀余量
 MAX_IMAGE_BYTES = 3_600_000
-MAX_PDF_BYTES = 30_000_000
+MAX_PDF_BYTES = 50_000_000  # 50MB，支持大体检报告 PDF
+MAX_PDF_PAGES = 15  # 支持大体检报告（常见 10~12 页）
 
 # 魔数 → media_type（不信任扩展名：手机改名、截图另存都可能对不上）
 _MAGIC: Tuple[Tuple[bytes, str], ...] = (
@@ -112,12 +116,85 @@ def sniff_media_type(data: bytes, file_path: Path) -> Optional[str]:
             ".pdf": "application/pdf"}.get(file_path.suffix.lower())
 
 
-def _optimize_image(raw_bytes: bytes, max_dim: int = 1200, quality: int = 75) -> Tuple[bytes, str]:
-    """智能预处理：压缩分辨率与字节，降低 80%+ Vision Token 消耗，显著提升多模态图像传输与模型推理速度。"""
+# ---------------------------------------------------------------- 图像智能预处理
+
+def _auto_orient(im):
+    """智能方向检测：如果图片明显是横拍（宽 >> 高），自动旋转 90° 使文字变正。
+    
+    判定逻辑：宽 > 高 × 1.5 时，认为是横拍的竖向文档，逆时针旋转 90°。
+    对于化验单/体检报告这类竖向文档，这个策略非常有效。
+    """
+    try:
+        from PIL import Image
+        w, h = im.size
+        # 宽高比 > 1.5 说明横拍了竖向文档
+        if w > h * 1.5:
+            im = im.transpose(Image.Transpose.ROTATE_90)
+    except Exception:
+        pass
+    return im
+
+
+def _enhance_medical_image(im):
+    """针对 X光/CT/MRI 屏幕拍照的专项增强预处理。
+    
+    医学影像特征：整体偏暗、低对比度、可能有屏幕反光。
+    处理策略：
+    1. 检测图片整体亮度，若偏暗则加强对比度
+    2. 自适应直方图均衡化增强细节
+    3. 适度锐化提高文字和边缘清晰度
+    """
     try:
         import io
-        from PIL import Image
+        import numpy as np
+        from PIL import Image, ImageEnhance, ImageOps
+        
+        # 计算平均亮度（灰度均值）
+        gray = im.convert("L")
+        pixels = list(gray.getdata())
+        avg_brightness = sum(pixels) / len(pixels)
+        
+        if avg_brightness < 100:
+            # 暗图：X光/CT 黑底白字类，大幅增强对比度
+            im = ImageOps.autocontrast(im, cutoff=1.0)
+            im = ImageEnhance.Contrast(im).enhance(1.5)
+            im = ImageEnhance.Brightness(im).enhance(1.2)
+        elif avg_brightness < 140:
+            # 中等暗度：拍屏幕的报告，适度增强
+            im = ImageOps.autocontrast(im, cutoff=0.5)
+            im = ImageEnhance.Contrast(im).enhance(1.2)
+        else:
+            # 正常亮度：常规增强即可
+            im = ImageOps.autocontrast(im, cutoff=0.3)
+        
+        # 统一锐化
+        im = ImageEnhance.Sharpness(im).enhance(1.3)
+        
+    except Exception:
+        pass
+    return im
+
+
+def _is_likely_medical_imaging(file_path: Path) -> bool:
+    """根据文件名猜测是否为医学影像类照片（X光/CT/MRI 拍屏等）。"""
+    name = file_path.name.lower()
+    imaging_hints = ("xray", "x光", "x_ray", "ct", "mri", "影像", "拍片",
+                     "胸片", "dr", "骨密度", "透视")
+    return any(h in name for h in imaging_hints)
+
+
+def _optimize_image(raw_bytes: bytes, max_dim: int = 1200, quality: int = 75,
+                    do_exif: bool = True) -> Tuple[bytes, str]:
+    """智能预处理：EXIF回正 + 方向检测 + 压缩分辨率与字节。"""
+    try:
+        import io
+        from PIL import Image, ImageOps
         im = Image.open(io.BytesIO(raw_bytes))
+        
+        # EXIF 回正（修复手机拍照方向信息）
+        if do_exif:
+            im = ImageOps.exif_transpose(im)
+        
         if im.mode in ("RGBA", "LA", "P"):
             bg = Image.new("RGB", im.size, (255, 255, 255))
             if im.mode == "P":
@@ -126,6 +203,9 @@ def _optimize_image(raw_bytes: bytes, max_dim: int = 1200, quality: int = 75) ->
             im = bg
         elif im.mode != "RGB":
             im = im.convert("RGB")
+
+        # 智能方向检测
+        im = _auto_orient(im)
 
         w, h = im.size
         if max(w, h) > max_dim:
@@ -139,8 +219,58 @@ def _optimize_image(raw_bytes: bytes, max_dim: int = 1200, quality: int = 75) ->
         return raw_bytes, "image/jpeg"
 
 
-def _build_source_blocks(file_path: Path) -> Tuple[List[dict], dict]:
-    """前置校验并构造多尺度高清内容块（整页 + 左右双栏切片增强）。返回 (blocks, diagnostics)。"""
+# ---------------------------------------------------------------- PDF 逐页渲染
+
+def _render_pdf_pages(data: bytes, file_path: Path) -> list:
+    """将 PDF 渲染为逐页的 base64 图片块列表。
+    
+    返回: list of (image_block_dict, page_index)
+    每个 image_block 可单独发送给 API。
+    """
+    import fitz  # PyMuPDF
+    import io
+    from PIL import Image, ImageOps, ImageEnhance
+
+    doc = fitz.open(stream=data, filetype="pdf")
+    pages_to_process = min(len(doc), MAX_PDF_PAGES)
+    page_blocks = []
+
+    for page_idx in range(pages_to_process):
+        page = doc[page_idx]
+        # 150 DPI 足够识别文字，省内存
+        pix = page.get_pixmap(dpi=150)
+        img_data = pix.tobytes("png")
+
+        im = Image.open(io.BytesIO(img_data)).convert("RGB")
+        w, h = im.size
+        max_dim = 1200  # PDF 页面限制 1200px
+        if max(w, h) > max_dim:
+            scale = max_dim / float(max(w, h))
+            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+        
+        # 增强处理
+        im = _enhance_medical_image(im)
+
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=65, optimize=True)
+        page_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        
+        block = {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/jpeg",
+                            "data": page_b64}}
+        page_blocks.append((block, page_idx))
+
+    doc.close()
+    return page_blocks
+
+
+def _build_source_blocks(file_path: Path) -> Tuple[list, dict]:
+    """前置校验并构造内容块。返回 (blocks_or_pages, diagnostics)。
+    
+    对于 PDF：返回 list of (block, page_idx) 用于逐页调用。
+    对于图片：返回 [block] 单图。
+    diag["is_pdf_pages"] 标记是否为 PDF 逐页模式。
+    """
     data = file_path.read_bytes()
     if not data:
         raise VisionInputError(
@@ -165,84 +295,64 @@ def _build_source_blocks(file_path: Path) -> Tuple[List[dict], dict]:
             "media_type": media_type, "model": config.VISION_MODEL}
 
     if is_pdf:
-        # PDF → 逐页渲染为压缩 JPEG 图片，避免 type:"document" 的百万级 token 消耗
-        # 实测：原始 PDF document 方式单份 300万+ token / ¥83；转图片后 ~5万 token / ¥1
-        MAX_PDF_PAGES = 5  # 体检报告一般 1~3 页，最多取前 5 页
         try:
-            import fitz  # PyMuPDF
-            import io
-            from PIL import Image, ImageOps, ImageEnhance
-
-            doc = fitz.open(stream=data, filetype="pdf")
-            pages_to_process = min(len(doc), MAX_PDF_PAGES)
-            blocks = []
-
-            for page_idx in range(pages_to_process):
-                page = doc[page_idx]
-                # 渲染为 200 DPI 的 pixmap（兼顾清晰度与体积）
-                pix = page.get_pixmap(dpi=200)
-                img_data = pix.tobytes("png")
-
-                # 和普通图片走相同的优化路径：限制长边 + 锐度增强 + JPEG 压缩
-                im = Image.open(io.BytesIO(img_data)).convert("RGB")
-                w, h = im.size
-                max_dim = 1600
-                if max(w, h) > max_dim:
-                    scale = max_dim / float(max(w, h))
-                    im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-                im_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(im, cutoff=0.3)).enhance(1.15)
-
-                buf = io.BytesIO()
-                im_enh.save(buf, format="JPEG", quality=80, optimize=True)
-                page_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                blocks.append({"type": "image",
-                               "source": {"type": "base64", "media_type": "image/jpeg",
-                                           "data": page_b64}})
-
-            doc.close()
-            diag["blocks_count"] = len(blocks)
-            diag["pdf_pages_total"] = pages_to_process
-            return (blocks, diag)
+            page_blocks = _render_pdf_pages(data, file_path)
+            diag["blocks_count"] = len(page_blocks)
+            diag["pdf_pages_total"] = len(page_blocks)
+            diag["is_pdf_pages"] = True
+            return (page_blocks, diag)
         except ImportError:
-            # PyMuPDF 未安装时回退为原始 document 方式（兜底）
-            pass
+            print("[Vision] PyMuPDF 未安装，回退为原始 document 方式")
         except Exception as exc:
-            # PDF 渲染失败时也回退为原始 document 方式
             print(f"[Vision] PDF 转图片失败({exc})，回退为原始 document 方式")
 
         # 回退：原始 PDF document 方式（token 消耗极高，仅作兜底）
         b64 = base64.b64encode(data).decode("ascii")
         diag["b64_len"] = len(b64)
         diag["fallback"] = "raw_document"
+        diag["is_pdf_pages"] = False
         return ([{"type": "document",
                   "source": {"type": "base64", "media_type": media_type, "data": b64}}],
                 diag)
 
-    # 图像智能高效预处理：EXIF 自动回正 + 对比度/锐度增强 + 极速单图高精输入
+    # ---- 图像智能高效预处理 ----
+    # EXIF 自动回正 + 方向检测 + 对比度/锐度增强
+    is_medical = _is_likely_medical_imaging(file_path)
     try:
         import io
         from PIL import Image, ImageOps, ImageEnhance
         im = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
-        w, h = im.size
         
-        # 限制长边至 1600px，兼顾极端细小文字清晰度与秒级推理速度
+        # 智能方向检测（横拍自动旋转）
+        im = _auto_orient(im)
+        
+        w, h = im.size
+        # 限制长边至 1600px
         max_dim = 1600
         if max(w, h) > max_dim:
             scale = max_dim / float(max(w, h))
             im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-            
-        # 适度增强锐度与对比度，让化验单表格与数值更易被 OCR 识别
-        im_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(im, cutoff=0.3)).enhance(1.15)
+        
+        # 根据图片类型选择增强策略
+        if is_medical:
+            im = _enhance_medical_image(im)
+        else:
+            im_enh = ImageEnhance.Sharpness(ImageOps.autocontrast(im, cutoff=0.3)).enhance(1.15)
+            im = im_enh
         
         buf = io.BytesIO()
-        im_enh.save(buf, format="JPEG", quality=80, optimize=True)
+        im.save(buf, format="JPEG", quality=80, optimize=True)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         
         diag["blocks_count"] = 1
+        diag["is_pdf_pages"] = False
+        diag["medical_enhanced"] = is_medical
         return ([{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}}], diag)
     except Exception:
-        opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=80)
+        # 回退路径也做 EXIF 回正和方向检测
+        opt_data, opt_mime = _optimize_image(data, max_dim=1568, quality=80, do_exif=True)
         b64 = base64.b64encode(opt_data).decode("ascii")
+        diag["is_pdf_pages"] = False
         return ([{"type": "image", "source": {"type": "base64", "media_type": opt_mime, "data": b64}}], diag)
 
 
@@ -252,9 +362,117 @@ def _diag_text(diag: dict) -> str:
             f"模型 {diag['model']}）")
 
 
-# ---------------------------------------------------------------- 主流程
+def _friendly_error(err, diag: dict) -> str:
+    """将技术错误转换为用户能看懂的提示信息。"""
+    err_str = str(err).lower()
+    filename = diag.get('filename', '文件')
+    
+    if 'timed out' in err_str or 'timeout' in err_str:
+        return (f"识别 {filename} 超时，可能是文件内容较复杂。"
+                "建议：请将 PDF 转为图片后重新上传（手机截图或拍照均可），或减少 PDF 页数后重试。")
+    if 'connection' in err_str or 'network' in err_str or 'urlopen' in err_str:
+        return "网络连接异常，AI 识别服务暂时不可用。请稍后重试。"
+    if '429' in err_str or '限流' in err_str or 'rate' in err_str:
+        return "AI 识别服务繁忙，请等待 30 秒后重试。"
+    if '503' in err_str or '502' in err_str or 'bad gateway' in err_str:
+        return "AI 识别服务暂时维护中，请稍后重试。"
+    if '401' in err_str or '403' in err_str or 'unauthorized' in err_str:
+        return "AI 识别服务授权失败，请联系管理员检查配置。"
+    if 'json' in err_str or 'schema' in err_str:
+        return (f"{filename} 的内容无法被正确识别。"
+                "建议：请确认上传的是清晰的体检报告/化验单；若为 PDF，可尝试转为图片后重新上传。")
+    if 'pymupdf' in err_str or 'fitz' in err_str:
+        return (f"{filename} 格式不兼容，无法解析此 PDF。"
+                "建议：请将 PDF 中的报告页截图保存为图片后重新上传。")
+    # 通用兜底
+    return (f"识别 {filename} 时遇到问题。"
+            "建议：请尝试将文件转为清晰的图片（JPG/PNG）后重新上传，或稍后重试。")
 
-def _extract_via_anthropic(source_blocks: List[dict], diag: dict,
+
+# ---------------------------------------------------------------- 多页结果合并
+
+def _merge_page_results(page_results: list) -> dict:
+    """合并多页 PDF 的逐页抽取结果为一个完整的报告数据。
+    
+    合并策略：
+    - document_type / exam_date / patient：取第一个非空值
+    - exam_info：取第一个非空值
+    - observations：所有页合并，按 code 去重（保留完整度更高的）
+    - findings：所有页直接拼接
+    - impressions：所有页去重拼接
+    - notes：所有页拼接
+    """
+    if not page_results:
+        return {}
+    if len(page_results) == 1:
+        return page_results[0]
+    
+    merged = {
+        "document_type": None,
+        "exam_date": None,
+        "patient": None,
+        "exam_info": None,
+        "findings": [],
+        "impressions": [],
+        "observations": [],
+        "notes": None,
+        "deidentified": True,
+        "engine": "vision_llm",
+    }
+    
+    seen_obs_codes = {}  # code -> observation dict
+    seen_impressions = set()
+    
+    for pr in page_results:
+        # 取第一个非空值
+        if not merged["document_type"] and pr.get("document_type"):
+            merged["document_type"] = pr["document_type"]
+        if not merged["exam_date"] and pr.get("exam_date"):
+            merged["exam_date"] = pr["exam_date"]
+        if not merged["patient"] and pr.get("patient"):
+            merged["patient"] = pr["patient"]
+        if not merged["exam_info"] and pr.get("exam_info"):
+            merged["exam_info"] = pr["exam_info"]
+        
+        # observations：按 code 去重，保留字段更完整的
+        for obs in pr.get("observations") or []:
+            code = (obs.get("code") or "").upper()
+            display = obs.get("display") or ""
+            key = code or display
+            if not key:
+                continue
+            if key in seen_obs_codes:
+                # 已有同名指标：保留 value_num 不为空的那个
+                existing = seen_obs_codes[key]
+                if obs.get("value_num") is not None and existing.get("value_num") is None:
+                    seen_obs_codes[key] = obs
+            else:
+                seen_obs_codes[key] = obs
+        
+        # findings：直接追加
+        for f in pr.get("findings") or []:
+            merged["findings"].append(f)
+        
+        # impressions：去重追加
+        for imp in pr.get("impressions") or []:
+            if imp and imp not in seen_impressions:
+                seen_impressions.add(imp)
+                merged["impressions"].append(imp)
+        
+        # notes 拼接
+        if pr.get("notes"):
+            if merged["notes"]:
+                merged["notes"] += "；" + pr["notes"]
+            else:
+                merged["notes"] = pr["notes"]
+    
+    merged["observations"] = list(seen_obs_codes.values())
+    return merged
+
+
+# ---------------------------------------------------------------- API 调用
+
+def _extract_via_anthropic(source_blocks: list, diag: dict,
                            doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
     if not config.ANTHROPIC_API_KEY:
         return None, None
@@ -309,16 +527,12 @@ def _extract_via_anthropic(source_blocks: List[dict], diag: dict,
 
 def _extract_via_openai(source_blocks: list, diag: dict,
                         doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
-    if not config.OPENAI_API_KEY:
+    if not config.OPENAI_API_KEYS:
         return None, None
     import urllib.request
     base = config.OPENAI_BASE_URL.rstrip("/")
     url = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {config.OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0",
-    }
+    
     # 将 Anthropic 格式的 source_blocks 转换为 OpenAI 格式的 image_url 内容块
     content_parts = []
     for blk in source_blocks:
@@ -331,7 +545,6 @@ def _extract_via_openai(source_blocks: list, diag: dict,
                 "image_url": {"url": f"data:{mime};base64,{b64}"},
             })
         elif blk.get("type") == "document":
-            # document 类型（PDF 原始回退）：OpenAI 协议不支持，跳过并报错
             return None, ExtractionError("OpenAI 兼容协议不支持直接发送 PDF document，请确保 PyMuPDF 已安装")
     if not content_parts:
         return None, ExtractionError("无有效图像内容块")
@@ -344,20 +557,60 @@ def _extract_via_openai(source_blocks: list, diag: dict,
             {"role": "user", "content": content_parts},
         ],
     }
-    try:
-        req = urllib.request.Request(
-            url, data=json.dumps(payload).encode("utf-8"),
-            headers=headers, method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            res_data = json.loads(resp.read().decode("utf-8"))
-            txt = res_data["choices"][0]["message"]["content"]
-            data = json.loads(_strip_to_json(txt))
-            data["engine"] = "vision_llm"
-            return data, None
-    except Exception as exc:
-        return None, exc
+    
+    # 多 Key 轮换：逐个尝试，余额不足/限流时自动切换下一个
+    last_err = None
+    for _attempt in range(len(config.OPENAI_API_KEYS)):
+        api_key = config.next_openai_key()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        }
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"),
+                headers=headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                txt = res_data["choices"][0]["message"]["content"]
+                data = json.loads(_strip_to_json(txt))
+                data["engine"] = "vision_llm"
+                return data, None
+        except Exception as exc:
+            last_err = exc
+            err_str = str(exc)
+            # 401/402/429：Key 失效或余额不足或限流，切换下一个 Key
+            if any(k in err_str for k in ("401", "402", "429", "insufficient", "quota", "balance")):
+                print(f"[Vision OCR] Key ...{api_key[-8:]} 不可用({err_str[:60]})，切换下一个 Key...")
+                time.sleep(0.5)
+                continue
+            # 其他错误（超时、网络等）不切 Key，直接返回
+            break
+    return None, last_err
 
+
+def _call_single_extraction(source_blocks: list, diag: dict,
+                            doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
+    """对单组 source_blocks 调用 API（先 Anthropic 后 OpenAI）。"""
+    data, anthropic_err = _extract_via_anthropic(source_blocks, diag, doc_type_hint)
+    if data:
+        return data, None
+    
+    if anthropic_err:
+        print(f"[Vision OCR] 主通道 (Anthropic) 失败: {anthropic_err}，切换至备用通道...")
+    
+    if config.OPENAI_API_KEY:
+        data, openai_err = _extract_via_openai(source_blocks, diag, doc_type_hint)
+        if data:
+            return data, None
+        return None, openai_err or anthropic_err
+    
+    return None, anthropic_err
+
+
+# ---------------------------------------------------------------- 主流程
 
 def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> ExtractionResult:
     file_path = Path(file_path)
@@ -369,38 +622,58 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
 
     if not config.ANTHROPIC_API_KEY and not config.OPENAI_API_KEY:
         raise ExtractionError(
-            "真实抽取不可用：未配置 ANTHROPIC_API_KEY 或 OPENAI_API_KEY。"
-            "请在 .env 填入密钥启用 AI 视觉抽取；"
-            "如需离线演示请显式设置 SOULHEALTH_MOCK=1（演示样例会明确标注）。"
+            "AI 识别服务未配置，暂时无法识别报告。请联系管理员开启服务。"
         )
 
     source_blocks, diag = _build_source_blocks(file_path)
 
-    # 1. 优先 Anthropic 视觉通道（主通道：OpenASI / Claude）
-    data, anthropic_err = _extract_via_anthropic(source_blocks, diag, doc_type_hint)
+    # ---- PDF 逐页模式：每页单独调 API，最后合并 ----
+    if diag.get("is_pdf_pages") and len(source_blocks) > 1:
+        print(f"[Vision OCR] PDF 逐页模式：共 {len(source_blocks)} 页，逐页调用 API...")
+        page_results = []
+        last_err = None
+        
+        for block, page_idx in source_blocks:
+            print(f"[Vision OCR] 正在处理第 {page_idx + 1}/{len(source_blocks)} 页...")
+            page_data, page_err = _call_single_extraction(
+                [block], diag, doc_type_hint)
+            
+            if page_data:
+                page_results.append(page_data)
+                print(f"[Vision OCR] 第 {page_idx + 1} 页抽取成功"
+                      f"（{len(page_data.get('observations', []))} 项指标，"
+                      f"{len(page_data.get('findings', []))} 项发现）")
+            else:
+                last_err = page_err
+                print(f"[Vision OCR] 第 {page_idx + 1} 页抽取失败: {page_err}")
+            
+            # 页间短暂间隔，避免 API 限流
+            if page_idx < len(source_blocks) - 1:
+                time.sleep(0.5)
+        
+        if page_results:
+            merged = _merge_page_results(page_results)
+            print(f"[Vision OCR] PDF 合并完成：共 {len(merged.get('observations', []))} 项指标，"
+                  f"{len(merged.get('findings', []))} 项发现，"
+                  f"{len(merged.get('impressions', []))} 条诊断")
+            return from_dict(merged)
+        
+        # 所有页都失败了
+        raise ExtractionError(_friendly_error(last_err, diag))
+    
+    # ---- 单页 PDF 或普通图片：单次调用 ----
+    # 对于 PDF 逐页模式只有 1 页的情况，解包
+    actual_blocks = source_blocks
+    if diag.get("is_pdf_pages") and len(source_blocks) == 1:
+        actual_blocks = [source_blocks[0][0]]  # 解包 (block, page_idx) 元组
+    
+    data, err = _call_single_extraction(actual_blocks, diag, doc_type_hint)
     if data:
         return from_dict(data)
-
-    if anthropic_err:
-        print(f"[Vision OCR] 主通道 (Anthropic/刀盾) 抽取失败: {anthropic_err}，正在尝试自动切换至备用通道 (OpenAI/FluAPI)...")
-
-    # 2. 备选 OpenAI 兼容视觉通道（备用通道：FluAPI）
-    if config.OPENAI_API_KEY:
-        data, openai_err = _extract_via_openai(source_blocks, diag, doc_type_hint)
-        if data:
-            print("[Vision OCR] 备用通道 (OpenAI/FluAPI) 视觉抽取成功！")
-            return from_dict(data)
-    else:
-        openai_err = None
-
-    err = openai_err or anthropic_err or "视觉抽取解析失败"
+    
     if isinstance(err, VisionNotSeeingImageError):
         raise err
-    raise ExtractionError(
-        f"AI 视觉服务暂时不可用（上游中转平台返回: {err}）。"
-        "建议：请检查 .env 中的 API 密钥通道是否正常，或将 .env 中的 SOULHEALTH_MOCK=1 切换为离线演示模式。"
-        f" {_diag_text(diag)}"
-    )
+    raise ExtractionError(_friendly_error(err, diag))
 
 
 # ---------------------------------------------------------------- 视觉自检
@@ -415,7 +688,7 @@ def _probe_png(color: Tuple[int, int, int] = (220, 30, 30), size: int = 48) -> b
                 + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
 
     return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IHDR", struct.pack(">IIBBBB B", size, size, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw))
             + chunk(b"IEND", b""))
 
