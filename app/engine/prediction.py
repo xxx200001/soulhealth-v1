@@ -320,6 +320,46 @@ def compute_risk_prediction(profile: dict, latest_obs: Dict[str, float], series_
             return "moderate", "中危", "#f59e0b", "建议 3–6 个月常规体检复查"
         return "low", "低危", "#10b981", "建议 6–12 个月年度体检随访"
 
+    drivers.sort(key=lambda d: -d.impact)
+
+    # 根据实际检出的异常指标动态确定风险领域
+    _DOMAIN_MAP = {
+        "ALT": "肝功能", "AST": "肝功能", "GGT": "肝功能",
+        "TG": "血脂", "LDLC": "血脂", "HDLC": "血脂", "TC": "血脂",
+        "GLU": "血糖", "HBA1C": "血糖",
+        "UA": "尿酸代谢",
+        "SBP": "血压", "DBP": "血压",
+        "CREA": "肾功能", "UREA": "肾功能",
+        "HGB": "血液系统", "RBC": "血液系统", "WBC": "血液系统",
+        "ALB": "营养状态",
+    }
+    detected_domains = []
+    seen = set()
+    # 优先取异常推高风险的驱动因子对应的领域
+    for d in drivers:
+        if d.direction == "increase" and d.code in _DOMAIN_MAP:
+            domain = _DOMAIN_MAP[d.code]
+            if domain not in seen:
+                seen.add(domain)
+                detected_domains.append(domain)
+    # 如果没有异常驱动因子，则从所有已有指标中推导
+    if not detected_domains:
+        for code in latest_obs:
+            if code in _DOMAIN_MAP:
+                domain = _DOMAIN_MAP[code]
+                if domain not in seen:
+                    seen.add(domain)
+                    detected_domains.append(domain)
+
+    # 构建动态风险标题
+    if detected_domains:
+        if len(detected_domains) <= 3:
+            target_name = "与".join(detected_domains) + "相关健康风险"
+        else:
+            target_name = "、".join(detected_domains[:3]) + "等综合健康风险"
+    else:
+        target_name = "综合健康风险"
+
     horizons = []
     for h_code, h_name, h_mo, p in [("1y", "未来 1 年", 12, p1), ("3y", "未来 3 年", 36, p3), ("5y", "未来 5 年", 60, p5)]:
         tier_code, tier_cn, color, advice = _tier_info(p)
@@ -333,17 +373,15 @@ def compute_risk_prediction(profile: dict, latest_obs: Dict[str, float], series_
             tier_cn=tier_cn,
             tier_color=color,
             follow_up_advice=advice,
-            summary=f"模型估计{h_name}内发生综合心血管代谢及慢病相关事件的校准风险为 {p * 100:.1f}%（处于「{tier_cn}」区间）"
+            summary=f"模型估计{h_name}内{target_name}进展的校准风险为 {p * 100:.1f}%（处于「{tier_cn}」区间）"
         ))
-
-    drivers.sort(key=lambda d: -d.impact)
 
     # 预测依据与环境上下文
     n_reports = len(repo.list_reports(profile["id"]))
     evidence_text = f"基于你档案中 {n_reports} 份检查报告 · {len(latest_obs)} 项连续指标数据与生活方式档案特征综合预测"
 
     return {
-        "target": "综合心血管代谢与慢病进展风险",
+        "target": target_name,
         "evidence": evidence_text,
         "horizons": [asdict(h) for h in horizons],
         "top_drivers": [asdict(d) for d in drivers[:6]],

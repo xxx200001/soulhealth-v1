@@ -40,7 +40,8 @@ def process_report(report_id: str) -> dict:
 
     try:
         extraction = extract_from_file(Path(rpt["stored_path"]),
-                                       rpt.get("report_type"))
+                                       rpt.get("report_type"),
+                                       report_id=report_id)
     except ExtractionError as exc:
         repo.set_report_status(report_id, "failed", error=str(exc))
         return repo.get_report(report_id)

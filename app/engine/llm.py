@@ -13,11 +13,11 @@ from .. import config
 
 
 def available() -> bool:
-    return config.LLM_MODE == "real" and bool(config.ANTHROPIC_API_KEY or config.OPENAI_API_KEY)
+    return config.LLM_MODE == "real" and bool(config.ANTHROPIC_API_KEY or config.OPENAI_API_KEY or config.LUDIES_API_KEY)
 
 
 def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[str]:
-    """多轮对话补全。支持完整上下文历史，优先 Anthropic，失败自动切换 OpenAI 协议。"""
+    """多轮对话补全。支持完整上下文历史，Anthropic → OpenAI → Ludies 三级降级。"""
     if not available() or not messages:
         return None
 
@@ -85,7 +85,7 @@ def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[
                     url, data=json.dumps(payload).encode("utf-8"),
                     headers=headers, method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with urllib.request.urlopen(req, timeout=12) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     content = data["choices"][0]["message"]["content"].strip()
                     if content:
@@ -96,8 +96,45 @@ def chat(system: str, messages: list[dict], max_tokens: int = 1000) -> Optional[
                     print(f"[LLM] Key ...{api_key[-8:]} 不可用，切换下一个...")
                     time.sleep(0.3)
                     continue
+                if any(k in err_str for k in ("502", "503", "Bad Gateway", "Service Unavailable")):
+                    print(f"[LLM] Key ...{api_key[-8:]} 上游故障，尝试下一个...")
+                    time.sleep(1.0)
+                    continue
                 print(f"[LLM] 备用通道 (OpenAI) 调用失败: {exc}")
                 break
+
+    # 3. 第三级备用：Ludies API (gemini-3.8-flash)
+    if config.LUDIES_API_KEY:
+        import json
+        import urllib.request
+        base = config.LUDIES_BASE_URL.rstrip("/")
+        url = f"{base}/chat/completions"
+        payload = {
+            "model": config.LUDIES_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                *formatted,
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        headers = {
+            "Authorization": f"Bearer {config.LUDIES_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        }
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"),
+                headers=headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                content = data["choices"][0]["message"]["content"].strip()
+                if content:
+                    return content
+        except Exception as exc:
+            print(f"[LLM] Ludies 备用通道调用失败: {exc}")
 
     return None
 

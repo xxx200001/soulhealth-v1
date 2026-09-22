@@ -85,8 +85,14 @@ def next_openai_key() -> str:
     _openai_key_idx += 1
     return key
 
+# 备用通道 2：Ludies API（OpenASI 全部失败时的后备）
+LUDIES_API_KEY: str = os.getenv("LUDIES_API_KEY", "").strip()
+LUDIES_BASE_URL: str = os.getenv("LUDIES_BASE_URL",
+                                  "https://api.ludies.best/v1").strip()
+LUDIES_MODEL: str = os.getenv("LUDIES_MODEL", "gemini-3.8-flash").strip()
+
 MOCK_MODE: bool = os.getenv("SOULHEALTH_MOCK", "").strip() == "1"
-LLM_MODE: str = "mock" if MOCK_MODE else ("real" if (ANTHROPIC_API_KEY or OPENAI_API_KEY) else "unconfigured")
+LLM_MODE: str = "mock" if MOCK_MODE else ("real" if (ANTHROPIC_API_KEY or OPENAI_API_KEY or LUDIES_API_KEY) else "unconfigured")
 
 OCR_ENGINE: str = os.getenv("SOULHEALTH_OCR_ENGINE", "vision_llm").strip() or "vision_llm"
 

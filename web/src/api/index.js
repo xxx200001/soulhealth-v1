@@ -111,6 +111,7 @@ export const api = {
   listReports: (pid) => request(`/api/reports?${q({ profile_id: pid })}`),
   getReport: (rid) => request(`/api/reports/${rid}`),
   retryReport: (rid) => post(`/api/reports/${rid}/retry`),
+  reportProgress: (rid) => request(`/api/reports/progress/${rid}`),
   confirmReport: (rid, payload) => post(`/api/reports/${rid}/confirm`, payload),
   reportFileUrl: (rid) => `${BASE}/api/reports/${rid}/file`,
   deleteReport: (rid) => del(`/api/reports/${rid}`),

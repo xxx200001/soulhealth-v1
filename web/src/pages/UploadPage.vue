@@ -35,11 +35,14 @@
       </div>
       <div class="drop busy" v-else>
         <span class="spin"></span>
-        <b>正在识别并整理健康数据……</b>
+        <b>{{ stageText }}</b>
       </div>
       <div v-if="busy" class="bar" style="margin-top: var(--sp-3)">
-        <span :style="{ width: (doing / Math.max(total,1)) * 100 + '%' }"></span>
+        <span :style="{ width: smoothProgress + '%', transition: 'width 0.6s ease' }"></span>
       </div>
+      <p v-if="busy" class="muted" style="text-align:center; font-size:12px; margin-top:4px">
+        {{ Math.round(smoothProgress) }}%
+      </p>
       <p v-if="notice" class="alert fade-in" :class="'alert-' + notice.type"
          style="margin-top: var(--sp-3)">{{ notice.text }}</p>
     </section>
@@ -108,6 +111,14 @@
           {{ r.error }}
           <button class="btn btn-sm btn-ghost" style="margin-left:8px" @click="retry(r)">重试</button>
         </p>
+        <div v-if="r.error && isPdfFile(r.source_filename)" class="pdf-tip">
+          <p class="pdf-tip-title">💡 PDF 识别失败？试试截图上传：</p>
+          <ol class="pdf-tip-steps">
+            <li>在手机或电脑上打开该 PDF 文件</li>
+            <li>对每一页进行<b>截图</b>（长按/截屏）</li>
+            <li>回到本页面，选择「图片 / 拍照」上传截图</li>
+          </ol>
+        </div>
 
         <!-- 待确认：原图核对 + 日期 + 低置信数值就地处理（F-UP-05 / AC-05） -->
         <div v-if="r.status === 'needs_confirmation'" class="confirm">
@@ -237,6 +248,41 @@ const summary = ref(null)
 const items = ref([])
 const scope = ref(null)
 const notice = ref(null)   // { type: 'ok' | 'warn' | 'danger', text }
+const smoothProgress = ref(0)
+const stageText = ref('正在上传资料……')
+let _progressTimer = null
+
+function startProgressAnim(totalFiles) {
+  smoothProgress.value = 0
+  stageText.value = '正在上传资料……'
+  const maxSlow = 85  // 慢速推进到 85%
+  const step = maxSlow / (totalFiles * 15)  // 每份约 15步（0.5s/步）
+  clearInterval(_progressTimer)
+  let phase = 0
+  _progressTimer = setInterval(() => {
+    if (smoothProgress.value < 20) {
+      stageText.value = '正在上传资料……'
+    } else if (smoothProgress.value < 60) {
+      stageText.value = '正在识别并整理健康数据……'
+    } else {
+      stageText.value = '正在整理录入健康档案……'
+    }
+    if (smoothProgress.value < maxSlow) {
+      // 越接近 maxSlow 越慢
+      const remaining = maxSlow - smoothProgress.value
+      const inc = Math.max(0.3, step * (remaining / maxSlow))
+      smoothProgress.value = Math.min(maxSlow, smoothProgress.value + inc)
+    }
+  }, 500)
+}
+
+function stopProgressAnim(success) {
+  clearInterval(_progressTimer)
+  if (success) {
+    stageText.value = '已完成识别并加入健康档案 ✓'
+    smoothProgress.value = 100
+  }
+}
 
 const icoUp = '<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v4a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19v-4"/></svg>'
 const icoEye = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block; vertical-align:middle; margin-left:4px; opacity:0.75"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
@@ -327,6 +373,9 @@ function statusBadge(s) {
   return { ready: 'badge-ok', needs_confirmation: 'badge-warn',
            failed: 'badge-danger' }[s] || 'badge-quiet'
 }
+function isPdfFile(name) {
+  return name && name.toLowerCase().endsWith('.pdf')
+}
 
 // 单次选择的份数上限；图片可多选，PDF 仅限 1 份
 const MAX_PICK = 3
@@ -355,36 +404,105 @@ async function onPick(e) {
   doing.value = 0
   summary.value = null
   items.value = []
+  smoothProgress.value = 0
+  stageText.value = '正在上传资料……'
+
+  // Step 1: Upload files (returns immediately, backend processes async)
+  let reportIds = []
+  try {
+    const res = await api.uploadReports(session.profileId, files)
+    reportIds = (res.reports || []).map(r => r.id).filter(Boolean)
+    if (!reportIds.length) {
+      throw new Error('上传失败，未获取到报告ID')
+    }
+    smoothProgress.value = 5
+    stageText.value = '正在识别并整理健康数据……'
+  } catch (err) {
+    busy.value = false
+    notice.value = { type: 'danger', text: `上传失败：${err.message}` }
+    return
+  }
+
+  // Step 2: Poll progress until all reports are done
+  const pollInterval = 1500  // 1.5s
+  const maxWait = 180000     // 3 minutes max
+  const startTime = Date.now()
+
+  const stageLabels = {
+    waiting: '正在排队处理……',
+    uploading: '正在上传资料……',
+    recognizing: '正在识别并整理健康数据……',
+    done: '已完成识别并加入健康档案 ✓',
+    failed: '识别处理失败',
+  }
+
+  async function pollUntilDone() {
+    while (Date.now() - startTime < maxWait) {
+      await new Promise(r => setTimeout(r, pollInterval))
+
+      // Check progress for each report
+      let allDone = true
+      let totalPct = 0
+      let currentStage = 'recognizing'
+
+      for (const rid of reportIds) {
+        try {
+          const p = await api.reportProgress(rid)
+          if (p.stage === 'done' || p.stage === 'failed') {
+            totalPct += 100
+          } else {
+            allDone = false
+            totalPct += (p.pct || 0)
+            if (p.stage) currentStage = p.stage
+            if (p.total > 0) {
+              stageText.value = `正在识别第 ${p.page || 0}/${p.total} 页……`
+            }
+          }
+        } catch {
+          allDone = false
+        }
+      }
+
+      const avgPct = Math.round(totalPct / reportIds.length)
+      smoothProgress.value = Math.max(smoothProgress.value, Math.min(95, avgPct))
+
+      if (!stageText.value.includes('页')) {
+        stageText.value = stageLabels[currentStage] || stageLabels.recognizing
+      }
+
+      if (allDone) break
+    }
+  }
+
+  await pollUntilDone()
+
+  // Step 3: Fetch final results
+  smoothProgress.value = 98
+  stageText.value = '正在整理录入健康档案……'
+
   const merged = { total: 0, ready: 0, needs_confirmation: 0, failed: 0,
                    observations: 0, comparable_codes: 0, date_span: null }
-  try {
-    // 并发快速处理（避免单线排队超时）
-    const tasks = files.map(async (f) => {
-      try {
-        const res = await api.uploadReports(session.profileId, [f])
-        mergeSummary(merged, res)
-        await hydrate(res.reports)
-      } catch (err) {
-        merged.total += 1
-        merged.failed += 1
-        items.value.push({
-          id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-          status: 'failed', source_filename: f.name,
-          error: `上传解析失败：${err.message}`,
-          _local: true, _file: f, _lowObs: [], _saving: false, _fileUrl: '',
-        })
-      } finally {
-        doing.value += 1
-      }
-    })
-    await Promise.allSettled(tasks)
-    summary.value = merged
-    notice.value = buildNotice(merged)
-  } finally {
-    busy.value = false
-    doing.value = 0
-    await loadScope()
+  for (const rid of reportIds) {
+    try {
+      const rpt = await api.getReport(rid)
+      merged.total += 1
+      if (rpt.status === 'ready') merged.ready += 1
+      else if (rpt.status === 'needs_confirmation') merged.needs_confirmation += 1
+      else if (rpt.status === 'failed') merged.failed += 1
+      merged.observations += (rpt.observations || []).length
+      await hydrate([rpt])
+    } catch {
+      merged.total += 1
+      merged.failed += 1
+    }
   }
+
+  smoothProgress.value = 100
+  stageText.value = merged.failed ? '部分识别完成' : '已完成识别并加入健康档案 ✓'
+  summary.value = merged
+  notice.value = buildNotice(merged)
+  busy.value = false
+  await loadScope()
 }
 
 function mergeSummary(m, res) {
@@ -623,4 +741,12 @@ onBeforeUnmount(() => {
   from { opacity: 0; transform: scale(0.95); }
   to { opacity: 1; transform: scale(1); }
 }
+
+.pdf-tip {
+  background: #fef9e7; border: 1px solid #f0d78e; border-radius: var(--r-md);
+  padding: 12px 16px; margin-top: 8px;
+}
+.pdf-tip-title { font-size: 14px; font-weight: 600; color: #856404; margin: 0 0 8px; }
+.pdf-tip-steps { margin: 0; padding-left: 20px; font-size: 13px; color: #6c5b1e; line-height: 1.8; }
+.pdf-tip-steps b { color: #d35400; }
 </style>

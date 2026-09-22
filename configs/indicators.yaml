@@ -943,3 +943,79 @@ indicators:
     reference:
       - { sex: ANY, age: [18, 120], lower: 30.0, upper: 100.0 }
 
+  # ------------------------- 甲状腺功能与抗体 -------------------------
+  TSH:
+    name_cn: 促甲状腺激素
+    aliases: [TSH, sTSH, 促甲状腺素, 血清促甲状腺激素, 促甲状腺素TSH, "TSH(促甲状腺素)"]
+    canonical_unit: mIU/L
+    unit_conversions: { "mIU/L": 1.0, "uIU/mL": 1.0, "uIU/ml": 1.0, "mU/L": 1.0, "mU/l": 1.0 }
+    plausible_range: [0.001, 200.0]
+    grade_multiplier: { mild: 1.0, moderate: 2.5, severe: 5.0 }
+    cv_intra: 0.193
+    cv_analytical: 0.05
+    log_transform: true
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0.35, upper: 4.94 }
+
+  FT3:
+    name_cn: 游离三碘甲状腺原氨酸
+    aliases: [FT3, FT-3, 游离T3, 游离三碘甲状腺原氨酸, 血清游离三碘甲状腺原氨酸, 游离三碘甲磺氨酸]
+    canonical_unit: pmol/L
+    unit_conversions: { "pmol/L": 1.0, "pmol/l": 1.0, "pg/mL": 1.536, "pg/ml": 1.536 }
+    plausible_range: [0.1, 50.0]
+    grade_multiplier: { mild: 1.0, moderate: 2.0, severe: 4.0 }
+    cv_intra: 0.078
+    cv_analytical: 0.05
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 3.10, upper: 6.80 }
+
+  FT4:
+    name_cn: 游离甲状腺素
+    aliases: [FT4, FT-4, 游离T4, 游离甲状腺素, 血清游离甲状腺素]
+    canonical_unit: pmol/L
+    unit_conversions: { "pmol/L": 1.0, "pmol/l": 1.0, "ng/dL": 12.87, "ng/dl": 12.87 }
+    plausible_range: [0.1, 150.0]
+    grade_multiplier: { mild: 1.0, moderate: 2.0, severe: 4.0 }
+    cv_intra: 0.057
+    cv_analytical: 0.04
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 12.0, upper: 22.0 }
+
+  TT3:
+    name_cn: 总三碘甲状腺原氨酸
+    aliases: [TT3, T3, 总T3, 三碘甲状腺原氨酸, 血清三碘甲状腺原氨酸]
+    canonical_unit: nmol/L
+    unit_conversions: { "nmol/L": 1.0, "nmol/l": 1.0, "ng/mL": 1.536, "ng/ml": 1.536 }
+    plausible_range: [0.1, 30.0]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0.89, upper: 2.44 }
+
+  TT4:
+    name_cn: 总甲状腺素
+    aliases: [TT4, T4, 总T4, 甲状腺素, 血清甲状腺素]
+    canonical_unit: nmol/L
+    unit_conversions: { "nmol/L": 1.0, "nmol/l": 1.0, "ug/dL": 12.87, "ug/dl": 12.87 }
+    plausible_range: [1.0, 500.0]
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 62.0, upper: 165.0 }
+
+  TGAB:
+    name_cn: 抗甲状腺球蛋白抗体
+    aliases: [TGAB, TGAb, "TG-Ab", 抗TG, TgAb, 抗甲状腺球蛋白抗体, 甲状腺球蛋白抗体]
+    canonical_unit: IU/mL
+    unit_conversions: { "IU/mL": 1.0, "IU/ml": 1.0, "kU/L": 1.0, "KU/L": 1.0, "U/mL": 1.0 }
+    plausible_range: [0, 50000.0]
+    grade_multiplier: { mild: 1.0, moderate: 3.0, severe: 10.0 }
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 115.0 }
+
+  TPOAB:
+    name_cn: 抗甲状腺过氧化物酶抗体
+    aliases: [TPOAB, TPOAb, "TPO-Ab", 抗TPO, TpoAb, 抗甲状腺过氧化物酶抗体, 甲状腺过氧化物酶抗体]
+    canonical_unit: IU/mL
+    unit_conversions: { "IU/mL": 1.0, "IU/ml": 1.0, "kU/L": 1.0, "KU/L": 1.0, "U/mL": 1.0 }
+    plausible_range: [0, 50000.0]
+    grade_multiplier: { mild: 1.0, moderate: 3.0, severe: 10.0 }
+    reference:
+      - { sex: ANY, age: [18, 120], lower: 0, upper: 34.0 }
+

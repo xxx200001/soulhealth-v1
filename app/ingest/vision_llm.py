@@ -41,6 +41,16 @@ MAX_PDF_PAGES = 15  # 支持大体检报告（常见 10~12 页）
 # 全局并发锁：限制同时进行的 API 调用数，防止多文件同时上传时触发限流
 _api_semaphore = threading.Semaphore(2)
 
+# 全局进度跟踪：report_id -> {page, total, stage, pct}
+_progress: dict = {}
+
+def get_progress(report_id: str) -> dict:
+    """获取指定报告的处理进度。"""
+    return _progress.get(report_id, {})
+
+def clear_progress(report_id: str):
+    _progress.pop(report_id, None)
+
 # 魔数 → media_type（不信任扩展名：手机改名、截图另存都可能对不上）
 _MAGIC: Tuple[Tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -590,14 +600,74 @@ def _extract_via_openai(source_blocks: list, diag: dict,
                 print(f"[Vision OCR] Key ...{api_key[-8:]} 不可用({err_str[:60]})，切换下一个 Key...")
                 time.sleep(0.5)
                 continue
+            # 502/503：上游服务故障，换 Key 重试（不同 Key 可能路由到不同上游实例）
+            if any(k in err_str for k in ("502", "503", "Bad Gateway", "Service Unavailable")):
+                print(f"[Vision OCR] Key ...{api_key[-8:]} 上游故障({err_str[:60]})，尝试下一个 Key...")
+                time.sleep(1.0)
+                continue
             # 其他错误（超时、网络等）不切 Key，直接返回
             break
     return None, last_err
 
 
+def _extract_via_ludies(source_blocks: list, diag: dict,
+                        doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
+    """备用通道 2：Ludies API (gemini-3.8-flash)，OpenAI 兼容协议。"""
+    if not config.LUDIES_API_KEY:
+        return None, None
+    import urllib.request
+    base = config.LUDIES_BASE_URL.rstrip("/")
+    url = f"{base}/chat/completions"
+
+    # 将 source_blocks 转换为 OpenAI image_url 格式
+    content_parts = []
+    for blk in source_blocks:
+        if blk.get("type") == "image":
+            src = blk["source"]
+            mime = src.get("media_type", "image/jpeg")
+            b64 = src["data"]
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        elif blk.get("type") == "document":
+            return None, ExtractionError("Ludies 不支持直接发送 PDF document，请确保 PyMuPDF 已安装")
+    if not content_parts:
+        return None, ExtractionError("无有效图像内容块")
+    content_parts.append({"type": "text", "text": extraction_user_prompt(doc_type_hint)})
+
+    payload = {
+        "model": config.LUDIES_MODEL,
+        "max_tokens": 4500,
+        "messages": [
+            {"role": "system", "content": EXTRACTION_SYSTEM},
+            {"role": "user", "content": content_parts},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {config.LUDIES_API_KEY}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    }
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"),
+            headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            res_data = json.loads(resp.read().decode("utf-8"))
+            txt = res_data["choices"][0]["message"]["content"]
+            data = json.loads(_strip_to_json(txt))
+            data["engine"] = "vision_llm"
+            return data, None
+    except Exception as exc:
+        print(f"[Vision OCR] Ludies 备用通道失败: {exc}")
+        return None, exc
+
+
 def _call_single_extraction(source_blocks: list, diag: dict,
                             doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
-    """对单组 source_blocks 调用 API（先 Anthropic 后 OpenAI），带并发锁。"""
+    """对单组 source_blocks 调用 API（Anthropic → OpenAI → Ludies 三级降级），带并发锁。"""
     with _api_semaphore:
         data, anthropic_err = _extract_via_anthropic(source_blocks, diag, doc_type_hint)
         if data:
@@ -610,14 +680,25 @@ def _call_single_extraction(source_blocks: list, diag: dict,
             data, openai_err = _extract_via_openai(source_blocks, diag, doc_type_hint)
             if data:
                 return data, None
-            return None, openai_err or anthropic_err
+            if openai_err:
+                print(f"[Vision OCR] 备用通道 (OpenAI/OpenASI) 失败: {openai_err}，切换至 Ludies...")
+        else:
+            openai_err = None
+
+        # 第三级备用：Ludies API
+        if config.LUDIES_API_KEY:
+            data, ludies_err = _extract_via_ludies(source_blocks, diag, doc_type_hint)
+            if data:
+                return data, None
+            return None, ludies_err or openai_err or anthropic_err
         
-        return None, anthropic_err
+        return None, openai_err or anthropic_err
 
 
 # ---------------------------------------------------------------- 主流程
 
-def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> ExtractionResult:
+def extract_from_file(file_path, doc_type_hint: Optional[str] = None,
+                      report_id: Optional[str] = None) -> ExtractionResult:
     file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(str(file_path))
@@ -634,13 +715,23 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
 
     # ---- PDF 逐页模式：每页单独调 API，最后合并 ----
     if diag.get("is_pdf_pages") and len(source_blocks) > 1:
-        print(f"[Vision OCR] PDF 逐页模式：共 {len(source_blocks)} 页，逐页调用 API...")
+        n_pages = len(source_blocks)
+        print(f"[Vision OCR] PDF 逐页模式：共 {n_pages} 页，逐页调用 API...")
         page_results = []
         last_err = None
+        
+        def _update_progress(page, stage='recognizing'):
+            if report_id:
+                pct = int((page / n_pages) * 100)
+                _progress[report_id] = {'page': page, 'total': n_pages,
+                                        'stage': stage, 'pct': pct}
+        
+        _update_progress(0, 'uploading')
         
         for block, page_idx in source_blocks:
             page_data = None
             page_err = None
+            _update_progress(page_idx, 'recognizing')
             
             # 每页最多重试 3 次（含首次）
             for retry in range(3):
@@ -649,7 +740,7 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
                     print(f"[Vision OCR] 第 {page_idx + 1} 页第 {retry + 1} 次重试（等待 {wait}s）...")
                     time.sleep(wait)
                 
-                print(f"[Vision OCR] 正在处理第 {page_idx + 1}/{len(source_blocks)} 页...")
+                print(f"[Vision OCR] 正在处理第 {page_idx + 1}/{n_pages} 页...")
                 page_data, page_err = _call_single_extraction(
                     [block], diag, doc_type_hint)
                 
@@ -672,9 +763,11 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
                 last_err = page_err
                 print(f"[Vision OCR] 第 {page_idx + 1} 页抽取失败（已重试）: {page_err}")
             
-            # 页间间隔，避免 API 限流（多页时间隔更长）
-            if page_idx < len(source_blocks) - 1:
-                time.sleep(1.5 if len(source_blocks) > 5 else 0.8)
+            _update_progress(page_idx + 1, 'recognizing')
+            
+            # 页间间隔，避免 API 限流
+            if page_idx < n_pages - 1:
+                time.sleep(1.0 if n_pages > 5 else 0.5)
         
         if page_results:
             merged = _merge_page_results(page_results)

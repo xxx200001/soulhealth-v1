@@ -135,6 +135,20 @@ ISSUE_GROUPS: List[dict] = [
      "future": "一过性升高多在诱因消除后 1–2 周回落；持续升高需要就医查因。",
      "actions": ["观察是否有感染/牙龈炎等诱因", "规律作息，2–4 周复查",
                  "持续升高或伴发热请及时就医"]},
+    {"key": "thyroid", "title": "甲状腺功能与代谢", "goal": "thyroid_care",
+     "codes": ["TSH", "FT3", "FT4", "TT3", "TT4", "TGAB", "TPOAB",
+               "促甲状腺激素", "游离三碘甲状腺原氨酸", "游离甲状腺素",
+               "抗甲状腺球蛋白抗体", "抗甲状腺过氧化物酶抗体"],
+     "low_bad": ["FT3", "FT4"],
+     "finding_kw": ["甲状腺", "结节", "TI-RADS", "TIRADS", "弥漫性", "回声不均",
+                    "回声减低", "桥本", "甲亢", "甲减", "甲状腺肿", "峡部"],
+     "meaning": "促甲状腺激素(TSH)、游离甲状腺素(FT4/FT3)以及甲状腺自身抗体(TPOAb/TGAb)共同反映甲状腺分泌调节与自身免疫状态。"
+                "抗体显著偏高常提示自身免疫性甲状腺病变（如桥本氏甲状腺炎），伴随 TSH 偏高多提示亚临床甲减倾向。",
+     "future": "自身抗体持续阳性伴TSH升高时，需定期监测以防甲减进展；早期通过改善作息、补充抗氧化营养与微量元素硒、避免高碘刺激，多数人可延缓或稳定发展。",
+     "actions": ["避免长期过量食用高碘食物（如紫菜、海带、大量海鲜等），避免熬夜与精神压力",
+                 "适当补充硒、优质蛋白及维生素D，辅助减轻甲状腺抗体炎症浸润",
+                 "每 3–6 个月复查甲状腺功能 5~7 项及甲状腺超声",
+                 "若 TSH 持续升高（>10 mIU/L）或伴畏寒乏力、体重异常增加，建议内分泌科专科就诊评估"]},
 ]
 
 _SRC_CN = {"lab_report": "检验报告", "ultrasound_report": "超声报告",
@@ -144,6 +158,76 @@ _SRC_CN = {"lab_report": "检验报告", "ultrasound_report": "超声报告",
 
 
 from .prediction import compute_risk_prediction, compute_risk_timeline
+from . import llm as llm_module
+
+# AI 个性化分析 Prompt
+_AI_ISSUE_SYSTEM = """你是一位资深健康管理医生，根据真实化验与影像数据为个人做个性化健康分析。
+要求：
+1. 必须基于提供的**真实数值和检查所见**来分析，具体引用数值
+2. 语言温和专业，面向非医学人士
+3. 每个问题组的 meaning 和 future 各 60-120 字，actions 给 3-4 条
+5. 不构成医疗诊断或处方
+
+输出 JSON（不带 markdown 代码块），格式为对象，key 是问题组名称：
+{"肝功能": {"meaning": "...", "future": "...", "actions": ["...", "..."]}, "血脂": {"meaning": "...", "future": "...", "actions": ["...", "..."]}}"""
+
+
+def _ai_batch_analyze(issue_data_list: list) -> dict:
+    """一次性调用 AI 分析所有问题组，返回 {title: {meaning, future, actions}}。"""
+    import json as _json
+
+    if not llm_module.available() or not issue_data_list:
+        return {}
+
+    # 构建 prompt
+    parts = []
+    for item in issue_data_list:
+        parts.append(f"\n## {item['title']}")
+        for line in item["data_lines"]:
+            parts.append(line)
+
+    user_prompt = "请根据以下真实检查数据，为每个问题组做个性化分析：\n" + "\n".join(parts)
+
+    try:
+        raw = llm_module.complete(system=_AI_ISSUE_SYSTEM, user=user_prompt,
+                                  max_tokens=2000)
+        if not raw:
+            return {}
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+        if text.endswith("```"):
+            text = text.rsplit("```", 1)[0]
+        text = text.strip()
+        result = _json.loads(text)
+        if isinstance(result, dict):
+            return result
+    except Exception as exc:
+        print(f"[Assessment AI] 批量 AI 分析失败: {exc}，全部降级为模板")
+    return {}
+
+
+def _build_issue_data(grp, insights, grp_findings, registry) -> Optional[dict]:
+    """为 AI 分析构建单个问题组的数据描述。"""
+    data_lines = []
+    for code, ins in insights.items():
+        meta = registry.get(code)
+        name = meta.name_cn if meta else code
+        unit = ins.latest.unit or ""
+        grade_text = GRADE_LABELS.get(ins.latest.grade, "正常")
+        data_lines.append(f"- {name}({code}): {ins.latest.value:g}{unit}，{grade_text}，{ins.latest.date}")
+        if len(ins.points) >= 2:
+            vals = [f"{p.value:g}({p.date})" for p in ins.points[-4:]]
+            data_lines.append(f"  趋势: {' → '.join(vals)}")
+        if ins.persistent_direction:
+            data_lines.append(f"  方向: {ins.persistent_direction}")
+
+    for f in grp_findings[:3]:
+        data_lines.append(f"- 检查所见({f['organ']}): {f['description']}")
+
+    if not data_lines:
+        return None
+    return {"title": grp["title"], "data_lines": data_lines}
 
 
 # ================================================================ 入口
@@ -212,7 +296,9 @@ def _build_issues(profile_id: str) -> List[dict]:
     findings = repo.list_findings(profile_id)
     codes_present = {c["code"] for c in repo.all_codes(profile_id) if c["code"]}
 
-    scored: List[dict] = []
+    # 第 1 步：收集所有问题组的评分和数据
+    groups_with_data = []
+    ai_data_list = []
     for grp in ISSUE_GROUPS:
         insights: dict[str, SeriesInsight] = {}
         for code in grp["codes"]:
@@ -233,8 +319,26 @@ def _build_issues(profile_id: str) -> List[dict]:
         score, why_parts, critical = _score_group(grp, insights, grp_findings,
                                                   registry)
         level = _level_of(score, critical)
+        groups_with_data.append((grp, insights, grp_findings, score, level, why_parts))
+
+        # 为 AI 批量分析准备数据
+        issue_data = _build_issue_data(grp, insights, grp_findings, registry)
+        if issue_data:
+            ai_data_list.append(issue_data)
+
+    # 第 2 步：一次性调用 AI 批量分析所有问题组（只调一次！）
+    print(f"[Assessment] 共 {len(groups_with_data)} 个问题组，正在调用 AI 批量分析...")
+    ai_results = _ai_batch_analyze(ai_data_list)
+    if ai_results:
+        print(f"[Assessment] AI 批量分析完成 ✓ 返回 {len(ai_results)} 个结果")
+    else:
+        print(f"[Assessment] AI 不可用或失败，全部使用模板")
+
+    # 第 3 步：组装 issues（传入 AI 分析结果）
+    scored: List[dict] = []
+    for grp, insights, grp_findings, score, level, why_parts in groups_with_data:
         scored.append(_compose_issue(grp, insights, grp_findings, score,
-                                     level, why_parts, registry))
+                                     level, why_parts, registry, ai_results))
 
     scored.sort(key=lambda x: (-x["score"], x["title"]))
     rank = 1
@@ -309,7 +413,7 @@ def _level_of(score: float, critical: bool) -> str:
 
 
 def _compose_issue(grp, insights, grp_findings, score, level, why_parts,
-                   registry) -> dict:
+                   registry, ai_results=None) -> dict:
     # 证据：每条可回溯 report_id + 真实日期 + 来源标签（F-AN-06 / AC-09）
     evidence: List[dict] = []
     for code, ins in insights.items():
@@ -365,20 +469,34 @@ def _compose_issue(grp, insights, grp_findings, score, level, why_parts,
     top_abnormal = [c for c, i in insights.items() if i.latest.grade != 0]
     summary = _summary_line(grp, insights, grp_findings, registry)
 
+    # ★ 从批量 AI 结果中取当前问题组的分析
+    ai_result = (ai_results or {}).get(grp["title"])
+    if ai_result and isinstance(ai_result, dict) and "meaning" in ai_result:
+        meaning = ai_result["meaning"]
+        future = ai_result["future"]
+        actions = ai_result.get("actions", grp["actions"])
+        analysis_source = "ai"
+    else:
+        meaning = grp["meaning"]
+        future = grp["future"] + "（以上为条件式趋势说明，不构成对疾病结局的预测）"
+        actions = grp["actions"]
+        analysis_source = "template"
+
     return {
         "rank": 999, "title": grp["title"], "level": level,
         "score": round(score, 1), "summary": summary,
         "goal_tags": [grp["goal"]] if level != "stable" else [],
         "evidence": evidence,
+        "analysis_source": analysis_source,
         "detail": {
             "found": found,
             "history": history,
             "compare": compare_cards,
             "why_priority": why_parts or ["该组当前无明显异常，仅作常规展示"],
-            "meaning": grp["meaning"],
-            "future": grp["future"] + "（以上为条件式趋势说明，不构成对疾病结局的预测）",
+            "meaning": meaning,
+            "future": future,
             "gaps": gaps,
-            "actions": grp["actions"],
+            "actions": actions,
             "codes_abnormal": top_abnormal,
         },
     }

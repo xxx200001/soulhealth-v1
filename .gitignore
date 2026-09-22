@@ -53,4 +53,7 @@ Thumbs.db
 .idea/
 cloudflared.exe
 ref_filesofgood/
+*.tar.gz
+last_instructions.txt
+test_*.py
 

@@ -14,6 +14,8 @@ from .. import config
 from .. import repository as repo
 from ..deps import current_user, scoped_profile, scoped_report
 from ..ingest import pipeline
+from ..ingest.vision_llm import get_progress, clear_progress
+import threading
 
 router = APIRouter(prefix="/reports", tags=["健康资料"])
 
@@ -39,9 +41,52 @@ def upload(profile_id: str = Form(...),
             shutil.copyfileobj(f.file, out)
         r = repo.create_report(profile_id, f.filename, str(dest))
         rids.append(r["id"])
+
+    def _process_bg():
+        for rid in rids:
+            try:
+                pipeline.process_report(rid)
+            except Exception as exc:
+                print(f"[Upload] Background process error for {rid}: {exc}")
+            finally:
+                clear_progress(rid)
+
+    thread = threading.Thread(target=_process_bg, daemon=True)
+    thread.start()
+
+    # Return immediately with report IDs in 'uploaded' status
+    reports = []
     for rid in rids:
-        pipeline.process_report(rid)
-    return pipeline.batch_summary(rids)
+        rpt = repo.get_report(rid)
+        if rpt:
+            reports.append(rpt)
+    return {
+        "total": len(rids),
+        "ready": 0,
+        "needs_confirmation": 0,
+        "failed": 0,
+        "observations": 0,
+        "comparable_codes": 0,
+        "date_span": None,
+        "reports": reports,
+        "async": True,
+    }
+
+
+@router.get("/progress/{rid}")
+def progress(rid: str):
+    """查询报告处理进度（PDF 逐页进度）。"""
+    p = get_progress(rid)
+    if p:
+        return p
+    # No active progress - check DB for final status
+    rpt = repo.get_report(rid)
+    if rpt and rpt['status'] in ('ready', 'needs_confirmation'):
+        return {'page': 0, 'total': 0, 'stage': 'done', 'pct': 100}
+    if rpt and rpt['status'] == 'failed':
+        return {'page': 0, 'total': 0, 'stage': 'failed', 'pct': 100,
+                'error': rpt.get('error', '')}
+    return {'page': 0, 'total': 0, 'stage': 'waiting', 'pct': 0}
 
 
 @router.get("")
