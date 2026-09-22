@@ -4,19 +4,19 @@
     <section class="card fade-in">
       <div class="card-title"><span class="dot"></span>上传健康资料</div>
       <p class="muted" style="margin: 6px 0 var(--sp-3)">
-        支持图片 / 拍照 / PDF，单次建议选择 1~3 份；每份独立高精识别、秒级入档
+        支持图片 / 拍照 / PDF，每份独立高精识别并自动入档
       </p>
 
       <!-- 隐藏文件输入：图片专用（兼容所有安卓机型） -->
       <input ref="inputImage" type="file" multiple accept="image/*" hidden
              :disabled="busy" @change="onPick" />
-      <!-- 隐藏文件输入：PDF 专用（解决 OPPO/Vivo/小米/华为 等国产安卓 image/* 劫持问题） -->
-      <input ref="inputPdf" type="file" multiple accept="application/pdf,.pdf" hidden
+      <!-- PDF 专用：单次仅限 1 份，确保大 PDF 稳定识别 -->
+      <input ref="inputPdf" type="file" accept="application/pdf,.pdf" hidden
              :disabled="busy" @change="onPick" />
 
       <div class="drop" :class="{ busy }" v-if="!busy">
         <span class="drop-ico" v-html="icoUp"></span>
-        <b>点击选择文件（单次建议 1~3 份）</b>
+        <b>点击选择文件（图片可多选，PDF 请逐份上传）</b>
         <div class="drop-btns">
           <button type="button" class="drop-btn drop-btn-img" @click.stop="$refs.inputImage.click()">
             <span class="drop-btn-ico">🖼</span> 图片 / 拍照
@@ -323,7 +323,7 @@ function statusBadge(s) {
            failed: 'badge-danger' }[s] || 'badge-quiet'
 }
 
-// 单次选择的份数上限（保障秒级并发识别与防止超时）；并发上传，单份失败不影响其他
+// 单次选择的份数上限；图片可多选，PDF 仅限 1 份
 const MAX_PICK = 3
 
 async function onPick(e) {
@@ -331,10 +331,19 @@ async function onPick(e) {
   e.target.value = ''
   if (!files.length) return
   notice.value = null
-  if (files.length > MAX_PICK) {
+  
+  // 检查是否包含 PDF：PDF 仅限 1 份
+  const hasPdf = files.some(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+  if (hasPdf && files.length > 1) {
+    // PDF 混合上传：只保留第一个 PDF
+    const firstPdf = files.find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+    files = [firstPdf]
+    notice.value = { type: 'warn',
+      text: 'PDF 文件请逐份上传以确保识别质量。已为您保留第一份 PDF，其余请稍后上传。' }
+  } else if (!hasPdf && files.length > MAX_PICK) {
     files = files.slice(0, MAX_PICK)
     notice.value = { type: 'warn',
-      text: `为了保障秒级极速识别与稳定性，单次最多选择 ${MAX_PICK} 份；已为您保留前 ${MAX_PICK} 份开始并发识别，其余资料请稍后上传` }
+      text: `图片单次最多选择 ${MAX_PICK} 份，已为您保留前 ${MAX_PICK} 份，其余请稍后上传。` }
   }
   busy.value = true
   total.value = files.length
