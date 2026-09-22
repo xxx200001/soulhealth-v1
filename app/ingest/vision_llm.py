@@ -20,6 +20,7 @@ import json
 import re
 import struct
 import time
+import threading
 import zlib
 from pathlib import Path
 from typing import Optional, Tuple
@@ -36,6 +37,9 @@ _MRI_JOINT_HINTS = ("mri", "knee", "膝", "关节", "核磁", "磁共振", "ct",
 MAX_IMAGE_BYTES = 3_600_000
 MAX_PDF_BYTES = 50_000_000  # 50MB，支持大体检报告 PDF
 MAX_PDF_PAGES = 15  # 支持大体检报告（常见 10~12 页）
+
+# 全局并发锁：限制同时进行的 API 调用数，防止多文件同时上传时触发限流
+_api_semaphore = threading.Semaphore(2)
 
 # 魔数 → media_type（不信任扩展名：手机改名、截图另存都可能对不上）
 _MAGIC: Tuple[Tuple[bytes, str], ...] = (
@@ -593,21 +597,22 @@ def _extract_via_openai(source_blocks: list, diag: dict,
 
 def _call_single_extraction(source_blocks: list, diag: dict,
                             doc_type_hint: Optional[str]) -> Tuple[Optional[dict], Optional[Exception]]:
-    """对单组 source_blocks 调用 API（先 Anthropic 后 OpenAI）。"""
-    data, anthropic_err = _extract_via_anthropic(source_blocks, diag, doc_type_hint)
-    if data:
-        return data, None
-    
-    if anthropic_err:
-        print(f"[Vision OCR] 主通道 (Anthropic) 失败: {anthropic_err}，切换至备用通道...")
-    
-    if config.OPENAI_API_KEY:
-        data, openai_err = _extract_via_openai(source_blocks, diag, doc_type_hint)
+    """对单组 source_blocks 调用 API（先 Anthropic 后 OpenAI），带并发锁。"""
+    with _api_semaphore:
+        data, anthropic_err = _extract_via_anthropic(source_blocks, diag, doc_type_hint)
         if data:
             return data, None
-        return None, openai_err or anthropic_err
-    
-    return None, anthropic_err
+        
+        if anthropic_err:
+            print(f"[Vision OCR] 主通道 (Anthropic) 失败: {anthropic_err}，切换至备用通道...")
+        
+        if config.OPENAI_API_KEY:
+            data, openai_err = _extract_via_openai(source_blocks, diag, doc_type_hint)
+            if data:
+                return data, None
+            return None, openai_err or anthropic_err
+        
+        return None, anthropic_err
 
 
 # ---------------------------------------------------------------- 主流程
@@ -634,9 +639,29 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
         last_err = None
         
         for block, page_idx in source_blocks:
-            print(f"[Vision OCR] 正在处理第 {page_idx + 1}/{len(source_blocks)} 页...")
-            page_data, page_err = _call_single_extraction(
-                [block], diag, doc_type_hint)
+            page_data = None
+            page_err = None
+            
+            # 每页最多重试 3 次（含首次）
+            for retry in range(3):
+                if retry > 0:
+                    wait = 3 * retry  # 3秒, 6秒
+                    print(f"[Vision OCR] 第 {page_idx + 1} 页第 {retry + 1} 次重试（等待 {wait}s）...")
+                    time.sleep(wait)
+                
+                print(f"[Vision OCR] 正在处理第 {page_idx + 1}/{len(source_blocks)} 页...")
+                page_data, page_err = _call_single_extraction(
+                    [block], diag, doc_type_hint)
+                
+                if page_data:
+                    break  # 成功，跳出重试循环
+                
+                # 判断是否值得重试
+                err_str = str(page_err).lower()
+                if any(k in err_str for k in ('timed out', 'timeout', '429', '502', '503', 'rate')):
+                    continue  # 超时/限流，值得重试
+                else:
+                    break  # 其他错误（如格式问题），不重试
             
             if page_data:
                 page_results.append(page_data)
@@ -645,11 +670,11 @@ def extract_from_file(file_path, doc_type_hint: Optional[str] = None) -> Extract
                       f"{len(page_data.get('findings', []))} 项发现）")
             else:
                 last_err = page_err
-                print(f"[Vision OCR] 第 {page_idx + 1} 页抽取失败: {page_err}")
+                print(f"[Vision OCR] 第 {page_idx + 1} 页抽取失败（已重试）: {page_err}")
             
-            # 页间短暂间隔，避免 API 限流
+            # 页间间隔，避免 API 限流（多页时间隔更长）
             if page_idx < len(source_blocks) - 1:
-                time.sleep(0.5)
+                time.sleep(1.5 if len(source_blocks) > 5 else 0.8)
         
         if page_results:
             merged = _merge_page_results(page_results)
